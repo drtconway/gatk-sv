@@ -1,0 +1,40 @@
+{
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "$id": "https://raw.githubusercontent.com/broadinstitute/gatk-sv/main/nextflow/assets/schema_samplesheet.json",
+    "title": "Sample sheet schema",
+    "description": "Schema for the TSV file provided with params.input. See nextflow/README.md#sample-sheet.",
+    "type": "array",
+    "items": {
+        "type": "object",
+        "properties": {
+            "family_id": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9_]+$",
+                "errorMessage": "family_id must be provided and contain only alphanumeric characters and underscores",
+                "meta": ["family_id"]
+            },
+            "sample_id": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9_]+$",
+                "errorMessage": "sample_id must be provided and contain only alphanumeric characters and underscores",
+                "meta": ["id"]
+            },
+            "bam": {
+                "type": "string",
+                "format": "file-path",
+                "exists": true,
+                "pattern": "^\\S+\\.(bam|cram)$",
+                "errorMessage": "bam must be provided, must exist, and must have extension '.bam' or '.cram'"
+            },
+            "bai": {
+                "type": "string",
+                "format": "file-path",
+                "exists": true,
+                "pattern": "^\\S+\\.(bai|crai)$",
+                "errorMessage": "bai must be provided, must exist, and must have extension '.bai' or '.crai'"
+            }
+        },
+        "required": ["family_id", "sample_id", "bam", "bai"],
+        "uniqueEntries": ["sample_id"]
+    }
+}
