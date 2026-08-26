@@ -431,6 +431,45 @@ process, turning them into a broadcastable value reused for every item in
 the per-sample channel (`bam_call_manta/main.nf` does this for `fasta`/
 `fasta_fai`). Apply the same pattern to every other caller subworkflow.
 
+## HPC (Slurm) config {#hpc-slurm-config}
+
+Real runs happen on HPC via Slurm + Apptainer, not in this environment.
+Cluster-specific values (partition/queue names, account string, Apptainer
+bind paths) don't belong in the committed `nextflow.config` — that file
+stays portable across every environment (local stub runs, this cluster,
+anyone else's cluster). They go in a separate, gitignored config layered
+on top at runtime with `-c`:
+
+1. Copy the template: `cp conf/hpc.config.example conf/hpc.config`
+   (`conf/hpc.config` is gitignored — see the repo's `.gitignore` — so your
+   real queue/account values never get committed).
+2. Fill in the `TODO`s: partition name(s), Slurm account (`clusterOptions`),
+   and any Apptainer bind paths your job scripts need.
+3. Run with both the portable engine profile and the site-specific config
+   layered together:
+
+   ```sh
+   nextflow run workflows/call_manta.nf -profile apptainer \
+     -c conf/hpc.config \
+     --input samplesheet.tsv --fasta ref.fa --fasta_fai ref.fa.fai \
+     --outdir /path/to/results
+   ```
+
+`-profile apptainer` (in `nextflow.config`) enables the Apptainer engine
+itself — that's portable and stays committed. `conf/hpc.config` adds only
+what's specific to this cluster on top of it: `process.executor = 'slurm'`,
+`process.queue`, `process.clusterOptions`, and an `executor {}` block
+tuning Slurm job submission/polling rate. See the comments in
+`conf/hpc.config.example` for the full shape, modelled on
+[nf-core/configs](https://github.com/nf-core/configs)' institutional
+profile convention.
+
+If different processes need different partitions (e.g. a high-memory queue
+for gCNV once that's implemented), add `withLabel:` overrides inside the
+`process {}` block in `conf/hpc.config` rather than hardcoding a queue name
+into any module or subworkflow — resource/placement config belongs in
+config files, not in pipeline code.
+
 ## Status
 
 `bam_call_manta` (wrapping nf-core's `manta/germline`) and its standalone

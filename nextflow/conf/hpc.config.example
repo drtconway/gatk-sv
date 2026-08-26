@@ -1,0 +1,65 @@
+// Site-specific Slurm/Apptainer config -- NOT loaded automatically.
+//
+// Copy this file to conf/hpc.config (gitignored, see nextflow/README.md)
+// and fill in real values for your cluster. `-profile apptainer` (defined
+// in ../nextflow.config) already enables the apptainer engine -- it's
+// portable and stays committed. This file adds only what's specific to
+// *this* cluster on top of it: queue names, account, bind paths. Run with
+// both layered together, e.g.:
+//
+//   nextflow run workflows/call_manta.nf -profile apptainer \
+//     -c conf/hpc.config \
+//     --input samplesheet.tsv --fasta ref.fa --fasta_fai ref.fa.fai
+//
+// Keep queue names, account strings, and bind paths out of the committed
+// nextflow.config -- that file should stay portable across every
+// environment (local stub runs, someone else's cluster, this one). This
+// file is where cluster-specific values belong instead.
+
+process {
+    executor = 'slurm'
+
+    // TODO: your partition/queue name(s). A single default here is fine to
+    // start with; add withLabel: overrides below once some processes need
+    // a different partition (e.g. a high-memory queue for gCNV).
+    queue = 'general'
+
+    // TODO: Slurm account/project string, if your site requires one.
+    // Leave as '' if not needed.
+    clusterOptions = '--account=YOUR_ACCOUNT'
+
+    // Recommended on shared/NFS filesystems: avoids false cache misses
+    // from clock/timestamp differences between the submitting node and
+    // compute nodes.
+    cache = 'lenient'
+
+    // Example per-label override -- add these as specific processes need
+    // more memory/time than the process_medium default in nextflow.config,
+    // or need a different partition (e.g. a himem queue):
+    // withLabel: process_high {
+    //     queue = 'himem'
+    // }
+}
+
+// Tune Slurm job submission/polling behaviour. Defaults are conservative;
+// raise queueSize once you've confirmed the scheduler and filesystem cope
+// with more concurrent jobs.
+executor {
+    name            = 'slurm'
+    queueSize       = 50
+    submitRateLimit = '10 sec'
+}
+
+apptainer {
+    // TODO: bind paths for any storage not under your home/project
+    // directory that job scripts need to read/write, e.g.:
+    // runOptions = '--bind /scratch --bind /data'
+}
+
+params {
+    // TODO: resource ceilings for this cluster, if your partitions cap
+    // below Nextflow's defaults.
+    // max_memory = 256.GB
+    // max_cpus   = 64
+    // max_time   = '48.h'
+}
