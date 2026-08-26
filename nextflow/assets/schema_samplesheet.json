@@ -15,8 +15,8 @@
             },
             "sample_id": {
                 "type": "string",
-                "pattern": "^[A-Za-z0-9_]+$",
-                "errorMessage": "sample_id must be provided and contain only alphanumeric characters and underscores",
+                "pattern": "^[A-Za-z0-9_-]+$",
+                "errorMessage": "sample_id must be provided and contain only alphanumeric characters, underscores, and hyphens",
                 "meta": ["id"]
             },
             "bam": {

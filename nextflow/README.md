@@ -215,18 +215,27 @@ SINGLETON01 SAMPLE_D       0            0            2    1
 ### Sample and family ID constraints
 
 Carried over from GATK-SV, which imposes these to avoid parsing errors in
-shell-based tooling downstream (e.g. `grep`). Validate at sample-sheet/PED
-ingestion time rather than letting these surface as opaque failures deep in
-the pipeline:
+shell-based tooling downstream — some of it does unquoted `grep`/`awk`
+matching directly against `sample_id` (e.g.
+`wdl/GatherBatchEvidence.wdl:543`, `wdl/SingleSampleFiltering.wdl`).
+Validate at sample-sheet/PED ingestion time rather than letting these
+surface as opaque failures deep in the pipeline:
 
-- Alphanumeric and underscores only — no dashes, whitespace, or other
-  special characters.
-- Unique within the project; not a substring of another ID in the same
-  project.
-- Should not be purely numeric, and should not contain `chr`, `name`,
-  `DEL`, `DUP`, `CPX`, or `CHROM` as a substring.
-- Applies to both `sample_id` and `family_id`, in both the sample sheet and
-  the pedigree file.
+- `family_id`: alphanumeric and underscores only — no dashes, whitespace,
+  or other special characters. Matches GATK-SV's rule as-is.
+- `sample_id`: alphanumeric, underscores, and **hyphens** — our real sample
+  IDs contain hyphens (e.g. `21PS00884-RDN0043`), so
+  `assets/schema_samplesheet.json` relaxes GATK-SV's rule for this field
+  specifically. This reintroduces the class of bug the stricter rule exists
+  to prevent, in any place we end up calling GATK-SV-derived shell logic
+  verbatim rather than GATK's compiled tools (`SVCluster`/`SVAnnotate`
+  take IDs as proper arguments and aren't at risk). Before vendoring any
+  GATK-SV shell script or WDL task logic, check it for unquoted sample-ID
+  interpolation into `grep`/`awk`/test expressions first.
+- Both fields: unique within the project; not a substring of another ID in
+  the same project. Should not be purely numeric, and should not contain
+  `chr`, `name`, `DEL`, `DUP`, `CPX`, or `CHROM` as a substring.
+- Applies in both the sample sheet and the pedigree file.
 
 ## Where to simplify relative to upstream GATK-SV
 
