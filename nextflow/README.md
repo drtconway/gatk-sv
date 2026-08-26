@@ -444,22 +444,27 @@ on top at runtime with `-c`:
    (`conf/hpc.config` is gitignored — see the repo's `.gitignore` — so your
    real queue/account values never get committed).
 2. Fill in the `TODO`s: partition name(s), Slurm account (`clusterOptions`),
-   and any Apptainer bind paths your job scripts need.
+   any Apptainer bind paths your job scripts need, and the reference genome
+   paths (`params.fasta`/`params.fasta_fai`).
 3. Run with both the portable engine profile and the site-specific config
    layered together:
 
    ```sh
    nextflow run workflows/call_manta.nf -profile apptainer \
-     -c conf/hpc.config \
-     --input samplesheet.tsv --fasta ref.fa --fasta_fai ref.fa.fai \
-     --outdir /path/to/results
+     -c conf/hpc.config --input samplesheet.tsv --outdir /path/to/results
    ```
 
 `-profile apptainer` (in `nextflow.config`) enables the Apptainer engine
 itself — that's portable and stays committed. `conf/hpc.config` adds only
 what's specific to this cluster on top of it: `process.executor = 'slurm'`,
-`process.queue`, `process.clusterOptions`, and an `executor {}` block
-tuning Slurm job submission/polling rate. See the comments in
+`process.queue`, `process.clusterOptions`, an `executor {}` block tuning
+Slurm job submission/polling rate, and reference genome paths under
+`params {}`. `--fasta`/`--fasta_fai` are ordinary pipeline params (declared
+in `nextflow.config`, consumed by every caller subworkflow, not specific to
+Manta) — since the reference genome is fixed per cluster, setting it once
+in `conf/hpc.config` is preferable to retyping the path on every
+invocation; a `--fasta` flag on the command line would still override it
+for a one-off run against a different reference. See the comments in
 `conf/hpc.config.example` for the full shape, modelled on
 [nf-core/configs](https://github.com/nf-core/configs)' institutional
 profile convention.

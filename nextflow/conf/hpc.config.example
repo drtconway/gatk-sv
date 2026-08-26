@@ -8,8 +8,10 @@
 // both layered together, e.g.:
 //
 //   nextflow run workflows/call_manta.nf -profile apptainer \
-//     -c conf/hpc.config \
-//     --input samplesheet.tsv --fasta ref.fa --fasta_fai ref.fa.fai
+//     -c conf/hpc.config --input samplesheet.tsv
+//
+// (--fasta/--fasta_fai aren't on the command line above because this file
+// sets them under params {} below -- see the note there.)
 //
 // Keep queue names, account strings, and bind paths out of the committed
 // nextflow.config -- that file should stay portable across every
@@ -62,4 +64,15 @@ params {
     // max_memory = 256.GB
     // max_cpus   = 64
     // max_time   = '48.h'
+
+    // Reference genome (hg38). These are pipeline-level params (declared
+    // in ../nextflow.config, consumed by every caller/evidence-collection
+    // workflow, not specific to Manta or any other single tool) but the
+    // actual file paths are site-specific, so they belong here rather than
+    // being retyped on the command line every run. A value set here
+    // overrides the `null` default in nextflow.config; --fasta on the
+    // command line would still override this, for a one-off run against a
+    // different reference.
+    fasta     = '/path/to/reference/hg38.fa'
+    fasta_fai = '/path/to/reference/hg38.fa.fai'
 }
