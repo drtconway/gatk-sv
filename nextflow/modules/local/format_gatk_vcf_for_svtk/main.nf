@@ -9,16 +9,24 @@
 // with pysam + tabix baked in -- see that Dockerfile for build/push
 // instructions and version history.
 //
+// The script is passed in as an explicit `path` input rather than relying
+// on Nextflow's bin/-auto-PATH mechanism -- see the note in
+// modules/local/ploidy_table_from_ped/main.nf for why (this bit us for
+// real on an HPC run: exit 127, "command not found").
+//
 process FORMAT_GATK_VCF_FOR_SVTK {
     tag "$meta.id"
     label 'process_single'
 
-    container 'docker://drtomc/gatk-sv-nf-sv-scripts:0.1.0'
+    // Plain image reference, not a docker:// URI -- see the note in
+    // modules/local/ploidy_table_from_ped/main.nf.
+    container 'drtomc/gatk-sv-nf-sv-scripts:0.1.0'
 
     input:
     tuple val(meta), path(vcf)
     path(contig_list)
     val(source)
+    path(script)
 
     output:
     tuple val(meta), path("*.svtk.vcf.gz"), path("*.svtk.vcf.gz.tbi"), emit: vcf
@@ -30,7 +38,7 @@ process FORMAT_GATK_VCF_FOR_SVTK {
     def args = task.ext.args ?: ''
     def prefix = task.ext.prefix ?: "${meta.id}"
     """
-    format_gatk_vcf_for_svtk.py \\
+    python3 ${script} \\
         --vcf ${vcf} \\
         --out ${prefix}.svtk.vcf.gz \\
         --source ${source} \\

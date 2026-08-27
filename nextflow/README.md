@@ -440,6 +440,19 @@ Real runs (with actual containers and data) happen on HPC via Slurm +
 Apptainer, not in this environment — use the `apptainer` profile in
 `nextflow.config`.
 
+**`-stub-run` validates wiring, not everything.** Two real bugs shipped
+past `-stub-run` and were only caught by an HPC run / a real local
+`-profile docker` run: a vendored script called by bare name that was
+never actually on `PATH` (`script:` only, never exercised by any
+`stub:` block), and a `docker://`-prefixed container reference that
+`-profile apptainer`'s stub run never noticed because `-stub-run` never
+invokes the container engine at all regardless of profile. See the
+[wiring pitfalls](#a-wiring-pitfall-worth-remembering) below for both. For
+any process that shells out to a vendored script or declares its own
+`container` directive, do at least one real (non-stub) run — a local
+`-profile docker` run is usually enough, doesn't need HPC access — before
+considering it validated.
+
 ### A wiring pitfall worth remembering
 
 `MANTA_GERMLINE` (like most nf-core modules) declares its reference genome
@@ -472,6 +485,24 @@ expectation that config closures could call into it, but classes there
 weren't visible from `conf/`-included config closures in this Nextflow
 version (`No such variable`) — inlining in the config file directly was
 what actually worked.
+
+Third: a `container` directive value is engine-specific syntax, not one
+universal reference. `docker://<image>` is Apptainer/Singularity syntax
+for "pull from Docker Hub"; plain `docker` does not understand that
+scheme and fails with `docker: invalid reference format`. Our own
+vendored-script modules (`ploidy_table_from_ped`,
+`format_svtk_vcf_for_gatk`, `format_gatk_vcf_for_svtk`) originally
+hardcoded `container 'docker://drtomc/gatk-sv-nf-sv-scripts:0.1.0'`,
+which worked under `-profile apptainer` but broke `-profile docker`
+outright — undetected until a real (non-stub) local run, since
+`-stub-run` never invokes the container engine at all. Fixed by using
+the bare image reference (`drtomc/gatk-sv-nf-sv-scripts:0.1.0`, no
+scheme), which both engines accept. For a container that genuinely needs
+different references per engine (e.g. a Docker Hub image plus a
+separately-hosted Singularity build, as most nf-core modules do), use
+the `workflow.containerEngine in ['singularity', 'apptainer'] ? ... : ...`
+conditional instead — see any nf-core-installed module, or
+`modules/local/genome_file/main.nf`, for the pattern.
 
 ## HPC (Slurm) config {#hpc-slurm-config}
 
@@ -601,10 +632,29 @@ as a param but not yet applied — only interval exclusion is, so far.
 
 Three of GATK-SV's own Python scripts (`ploidy_table_from_ped.py`,
 `format_svtk_vcf_for_gatk.py`, `format_gatk_vcf_for_svtk.py`) are copied
-verbatim into `bin/` — Nextflow auto-adds a pipeline's top-level `bin/` to
-every process's `PATH`, so they're callable by name from any process
-script without a hardcoded path. See `bin/README.md` for exactly which
-upstream commit they were vendored from, and for two known gaps:
+verbatim into `bin/`. See `bin/README.md` for exactly which upstream
+commit they were vendored from, and for two known gaps:
+
+**These scripts are passed to their processes as explicit `path` inputs**
+(e.g. `PLOIDY_TABLE_FROM_PED(ped, contigs, file(ploidy_script))`, invoked
+as `python3 ${script}`), not called by bare name relying on Nextflow's
+`bin/`-auto-PATH mechanism. That mechanism ties `PATH` to
+`scriptFile.main.parent.resolve('bin')` — the directory of the *script
+passed to `nextflow run`* — unconditionally, not the launch/current
+directory. Since every entry point lives in `workflows/`, not the
+repository root where `bin/` actually is, `bin/` auto-PATH silently never
+applies to any `workflows/*.nf` script. This produced a real failure on an
+HPC run (`exit 127: ploidy_table_from_ped.py: command not found`) that
+`-stub-run` never caught, because a process's `stub:` block never calls
+the vendored script by name — only `script:` does, and stub validation
+never executes `script:`. The fix threads each script's path down from
+the entry point (where `pipelineRoot` is already computed correctly for
+`assets/schema_samplesheet.json`, for the same reason) through the
+subworkflow to the process. **Lesson for future modules that shell out to
+a vendored script**: don't rely on bin/-auto-PATH from a `workflows/*.nf`
+entry point; pass the script as an explicit input instead, and validate
+with a real (non-stub, e.g. `-profile docker`) run at least once, since
+stub runs won't exercise the actual invocation.
 
 - **pysam version**: the two format-conversion scripts import `pysam`.
   GATK-SV's own container pins `pysam==0.15.4` specifically (built from

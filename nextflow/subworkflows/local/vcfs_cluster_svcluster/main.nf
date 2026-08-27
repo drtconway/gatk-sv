@@ -48,12 +48,15 @@ workflow VCFS_CLUSTER_SVCLUSTER {
     dict               // channel: [ meta, dict ] -- sequence dictionary, required by GATK4_SVCLUSTER
     caller              // val: caller name, e.g. 'manta' -- used as --source for the final format conversion
     min_size            // val: Int, minimum SV size to retain (GATK-SV default: 50) -- not yet applied, see note below
+    ploidy_script                // val: absolute path to bin/ploidy_table_from_ped.py
+    format_svtk_vcf_for_gatk_script  // val: absolute path to bin/format_svtk_vcf_for_gatk.py
+    format_gatk_vcf_for_svtk_script  // val: absolute path to bin/format_gatk_vcf_for_svtk.py
 
     main:
     GENOME_FILE(fasta_fai)
     genome_file = GENOME_FILE.out.genome_file.map { meta, g -> g }.collect()
 
-    PLOIDY_TABLE_FROM_PED(ped, contig_list.map { meta, c -> c }.collect())
+    PLOIDY_TABLE_FROM_PED(ped, contig_list.map { meta, c -> c }.collect(), file(ploidy_script))
     ploidy_table = PLOIDY_TABLE_FROM_PED.out.ploidy_table.map { meta, t -> t }.collect()
 
     // --- Step 2: per-sample prepare (format conversion + interval filter) ---
@@ -62,7 +65,11 @@ workflow VCFS_CLUSTER_SVCLUSTER {
     // exclusion is. Revisit once this subworkflow's overall shape is
     // validated; min_size is threaded through as a param already.
 
-    FORMAT_SVTK_VCF_FOR_GATK(vcfs, ploidy_table.map { t -> [ [id: 'ploidy'], t ] })
+    FORMAT_SVTK_VCF_FOR_GATK(
+        vcfs,
+        ploidy_table.map { t -> [ [id: 'ploidy'], t ] },
+        file(format_svtk_vcf_for_gatk_script)
+    )
 
     VCF_ENDS_BED_PRE(FORMAT_SVTK_VCF_FOR_GATK.out.vcf)
 
@@ -118,7 +125,8 @@ workflow VCFS_CLUSTER_SVCLUSTER {
     FORMAT_GATK_VCF_FOR_SVTK(
         EXCLUDE_VARIANTS_BY_ID_POST.out.vcf.map { meta, vcf, tbi -> [ meta, vcf ] },
         contig_list.map { meta, c -> c }.collect(),
-        caller
+        caller,
+        file(format_gatk_vcf_for_svtk_script)
     )
 
     clustered_vcf = FORMAT_GATK_VCF_FOR_SVTK.out.vcf

@@ -53,7 +53,10 @@ workflow {
         UTILS_INPUT_CHANNELS.out.fasta_fai,
         dict,
         'manta',
-        50
+        50,
+        "${pipelineRoot}/bin/ploidy_table_from_ped.py",
+        "${pipelineRoot}/bin/format_svtk_vcf_for_gatk.py",
+        "${pipelineRoot}/bin/format_gatk_vcf_for_svtk.py"
     )
 
     VCFS_CLUSTER_SVCLUSTER.out.clustered_vcf.view { meta, vcf, tbi -> "Clustered Manta VCF: ${vcf}" }

@@ -12,15 +12,23 @@
 // baked in, built and pushed to Docker Hub -- see that Dockerfile for
 // build/push instructions and version history.
 //
+// The script is passed in as an explicit `path` input rather than relying
+// on Nextflow's bin/-auto-PATH mechanism -- see the note in
+// modules/local/ploidy_table_from_ped/main.nf for why (this bit us for
+// real on an HPC run: exit 127, "command not found").
+//
 process FORMAT_SVTK_VCF_FOR_GATK {
     tag "$meta.id"
     label 'process_single'
 
-    container 'docker://drtomc/gatk-sv-nf-sv-scripts:0.1.0'
+    // Plain image reference, not a docker:// URI -- see the note in
+    // modules/local/ploidy_table_from_ped/main.nf.
+    container 'drtomc/gatk-sv-nf-sv-scripts:0.1.0'
 
     input:
     tuple val(meta), path(vcf)
     tuple val(meta2), path(ploidy_table)
+    path(script)
 
     output:
     tuple val(meta), path("*.formatted.vcf.gz"), emit: vcf
@@ -31,7 +39,7 @@ process FORMAT_SVTK_VCF_FOR_GATK {
     script:
     def prefix = task.ext.prefix ?: "${meta.id}"
     """
-    format_svtk_vcf_for_gatk.py \\
+    python3 ${script} \\
         --vcf ${vcf} \\
         --out ${prefix}.formatted.vcf.gz \\
         --ploidy-table ${ploidy_table}
