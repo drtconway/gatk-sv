@@ -440,18 +440,34 @@ Real runs (with actual containers and data) happen on HPC via Slurm +
 Apptainer, not in this environment — use the `apptainer` profile in
 `nextflow.config`.
 
-**`-stub-run` validates wiring, not everything.** Two real bugs shipped
-past `-stub-run` and were only caught by an HPC run / a real local
-`-profile docker` run: a vendored script called by bare name that was
-never actually on `PATH` (`script:` only, never exercised by any
-`stub:` block), and a `docker://`-prefixed container reference that
-`-profile apptainer`'s stub run never noticed because `-stub-run` never
-invokes the container engine at all regardless of profile. See the
-[wiring pitfalls](#a-wiring-pitfall-worth-remembering) below for both. For
-any process that shells out to a vendored script or declares its own
-`container` directive, do at least one real (non-stub) run — a local
-`-profile docker` run is usually enough, doesn't need HPC access — before
-considering it validated.
+**`-stub-run` validates wiring, not everything.** Three real bugs shipped
+past `-stub-run` and were only caught by an HPC run (or a real local
+`-profile docker` run reproducing it):
+
+- A vendored script called by bare name that was never actually on `PATH`
+  (`script:` only, never exercised by any `stub:` block).
+- A `docker://`-prefixed container reference that broke `-profile docker`,
+  which `-stub-run` never noticed because it never invokes the container
+  engine at all regardless of profile.
+- A genuine data-correctness bug that needed *real* data flowing through
+  *real* tool logic to surface at all: Manta writes the BAM's `SM` tag as
+  the VCF's sample column, not `sample_id`, and nothing failed until a
+  downstream step (`SVCluster`'s ploidy-table lookup) actually needed the
+  two to match. No amount of stub testing — or even a correct, running
+  container — would have caught this; it only showed up once a real
+  sample's VCF met a real ploidy table with a real, non-matching sample
+  name. See [Status](#status) for the fix.
+
+See the [wiring pitfalls](#a-wiring-pitfall-worth-remembering) below for
+the first two. For any process that shells out to a vendored script or
+declares its own `container` directive, do at least one real (non-stub)
+run — a local `-profile docker` run is usually enough, doesn't need HPC
+access — before considering it validated. But even that isn't sufficient
+proof of *correctness*: when wrapping a bare tool GATK-SV's own WDL task
+does more with (renames, reheaders, converts), check the WDL task's full
+command block, not just whether the tool runs — a process that runs
+successfully and produces a plausible-looking VCF can still be silently
+wrong in a way that only breaks two or three steps later.
 
 ### A wiring pitfall worth remembering
 
@@ -554,8 +570,23 @@ Implemented and validated via `-stub-run` against a mixed BAM/CRAM sample
 sheet (see `tests/data/samplesheet.tsv`):
 
 - `bam_call_manta` (wraps nf-core's `manta/germline`) and its standalone
-  entry point `workflows/call_manta.nf`. Also confirmed working against
-  real BAM/CRAM data on HPC (Slurm + Apptainer).
+  entry point `workflows/call_manta.nf`. Confirmed working against real
+  BAM/CRAM data on HPC (Slurm + Apptainer). Like Wham, GATK-SV's own Manta
+  task (`wdl/Manta.wdl`) does more than the nf-core module:
+  - Sample-column rewrite (`modules/local/manta/fix_sample_id`) — Manta
+    has no `--sample-name` flag and writes the BAM's own `SM` tag as the
+    VCF's sample column; GATK-SV's task pipes through
+    `bcftools reheader -s <(echo "sample_id")`
+    (`wdl/Manta.wdl:152`). This one wasn't caught until a real run: nothing
+    downstream needed the VCF's *internal* sample name to match `sample_id`
+    until `SVCluster`'s ploidy-table lookup
+    (`format_svtk_vcf_for_gatk.py`) did, which fails with
+    `KeyError: <sample_id>` when it doesn't — the ploidy table is keyed by
+    `sample_id`, not whatever the BAM's `SM` tag happens to be.
+  - **Not implemented**: GATK-SV also runs Manta's raw output through
+    `convertInversion.py` (converts Manta's inversion-signaling `BND` pairs
+    into proper `INV` records) before the reheader step. Skipped for now;
+    revisit once inversions specifically need validating.
 - `bam_call_wham` (wraps nf-core's `whamg`) and its standalone entry point
   `workflows/call_wham.nf`. Unlike Manta, GATK-SV's own Wham task
   (`wdl/Whamg.wdl`) does more than a plain `whamg` invocation, so this

@@ -6,8 +6,18 @@
 // intermediates GATK-SV never consumes downstream, so we drop them here
 // too rather than plumbing them through for no consumer.
 //
+// GATK-SV's task also rewrites the output VCF's sample column to
+// sample_id (wdl/Manta.wdl:152, `bcftools reheader`) since Manta has no
+// --sample-name flag and otherwise writes the BAM's own SM tag. This *is*
+// implemented here (MANTA_FIX_SAMPLE_ID) -- found via a real KeyError
+// downstream (SVCluster's ploidy-table lookup is keyed by sample_id) when
+// it wasn't, on a run against real data. See
+// modules/local/manta/fix_sample_id/main.nf for the known gap this
+// doesn't yet cover (Manta's convertInversion.py post-processing).
+//
 
-include { MANTA_GERMLINE } from '../../../modules/nf-core/manta/germline/main'
+include { MANTA_GERMLINE      } from '../../../modules/nf-core/manta/germline/main'
+include { MANTA_FIX_SAMPLE_ID } from '../../../modules/local/manta/fix_sample_id/main'
 
 workflow BAM_CALL_MANTA {
     take:
@@ -42,8 +52,10 @@ workflow BAM_CALL_MANTA {
     // when the real tool isn't installed. Wire it up once we're running
     // against real containers and actually need version tracking.
 
-    vcf = MANTA_GERMLINE.out.diploid_sv_vcf
-    vcf_tbi = MANTA_GERMLINE.out.diploid_sv_vcf_tbi
+    MANTA_FIX_SAMPLE_ID(MANTA_GERMLINE.out.diploid_sv_vcf)
+
+    vcf = MANTA_FIX_SAMPLE_ID.out.vcf
+    vcf_tbi = MANTA_FIX_SAMPLE_ID.out.tbi
 
     emit:
     vcf       // channel: [ meta, vcf ]
