@@ -25,6 +25,12 @@
             "exists": true,
             "description": "Reference genome FASTA index (.fai)."
         },
+        "primary_contigs_list": {
+            "type": "string",
+            "format": "file-path",
+            "exists": true,
+            "description": "List of canonical contigs (one per line), used e.g. by Wham (-c). Required by workflows/call_wham.nf; not needed by callers that don't use it."
+        },
         "outdir": {
             "type": "string",
             "format": "directory-path",

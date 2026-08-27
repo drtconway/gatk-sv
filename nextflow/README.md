@@ -439,6 +439,27 @@ output. Fix: `.collect()` the reference channels before passing them to the
 process, turning them into a broadcastable value reused for every item in
 the per-sample channel (`bam_call_manta/main.nf` does this for `fasta`/
 `fasta_fai`). Apply the same pattern to every other caller subworkflow.
+`.map { meta, f -> f }.collect()` (strip meta, then collect) if the target
+process wants a bare path rather than a `[meta, path]` tuple — collecting
+first wraps the whole tuple in a one-element list instead and breaks the
+downstream `.map` (`bam_call_wham/main.nf` needed this variant, since
+`WHAMG` takes bare `path(fasta)`/`path(fasta_fai)`, unlike Manta).
+
+Second: `file()` behaves differently inside a `conf/modules.config`
+`ext.args` closure than in ordinary workflow script code. There, `file`
+resolves to `nextflow.script.ScriptBinding.file()` (a zero-arg accessor)
+instead of the top-level `file(path)` factory function, so a bare
+`file(params.some_path)` call inside `ext.args = { ... }` fails with
+`No signature of method: ...file() is applicable for argument types: ()
+values: []` — a genuine namespace collision specific to config-closure
+scope. Fix: call the fully-qualified `nextflow.Nextflow.file(...)` instead
+(see `conf/modules.config`'s `WHAMG` block, which reads
+`params.primary_contigs_list`'s contents this way to build Wham's `-c`
+argument). A `lib/*.groovy` helper class was tried first, on the
+expectation that config closures could call into it, but classes there
+weren't visible from `conf/`-included config closures in this Nextflow
+version (`No such variable`) — inlining in the config file directly was
+what actually worked.
 
 ## HPC (Slurm) config {#hpc-slurm-config}
 
@@ -486,19 +507,43 @@ config files, not in pipeline code.
 
 ## Status
 
-`bam_call_manta` (wrapping nf-core's `manta/germline`) and its standalone
-entry point `workflows/call_manta.nf` are implemented and validated via
-`-stub-run` against a mixed BAM/CRAM sample sheet (see
-`tests/data/samplesheet.tsv`). This is the reference pattern for the
-remaining callers/evidence-collection subworkflows in the
-[directory layout](#directory-layout): `MANTA_GERMLINE`'s wrapper is the
-template for `BAM_CALL_WHAM`, `BAM_CALL_SCRAMBLE`, etc. — vendor the
+Implemented and validated via `-stub-run` against a mixed BAM/CRAM sample
+sheet (see `tests/data/samplesheet.tsv`):
+
+- `bam_call_manta` (wraps nf-core's `manta/germline`) and its standalone
+  entry point `workflows/call_manta.nf`. Also confirmed working against
+  real BAM/CRAM data on HPC (Slurm + Apptainer).
+- `bam_call_wham` (wraps nf-core's `whamg`) and its standalone entry point
+  `workflows/call_wham.nf`. Unlike Manta, GATK-SV's own Wham task
+  (`wdl/Whamg.wdl`) does more than a plain `whamg` invocation, so this
+  subworkflow adds two correctness-critical steps around the nf-core
+  module rather than using it as-is:
+  - Contig restriction via `-c primary_contigs_list`, wired through
+    `ext.args` in `conf/modules.config` (see the pitfalls above for why
+    this needed `nextflow.Nextflow.file()` rather than a bare `file()`
+    call).
+  - Sample-ID/TAGS rewrite (`modules/local/wham/fix_sample_id`) — Wham
+    defaults to the BAM's own `SM` tag for both the VCF sample column and
+    the `TAGS` INFO field, and GATK-SV's downstream `svtk standardize_vcf`
+    reads `TAGS` specifically for WHAM VCFs, so this is genuinely
+    correctness-critical, not cosmetic.
+  - **Deliberately not implemented**: GATK-SV also scatters Wham calls
+    over an `include_bed_file` region whitelist and concatenates, to bound
+    runtime and avoid regions Wham struggles with. We currently run
+    `whamg` genome-wide in one shot instead. Revisit if runtime on real
+    data warrants it.
+
+This is the reference pattern for the remaining callers/evidence-collection
+subworkflows in the [directory layout](#directory-layout): vendor the
 nf-core module with `nf-core modules install`, wrap it in a
-`subworkflows/local/` composition matching the channel/`.collect()`
-patterns above, add a thin `workflows/call_*.nf` entry point, validate with
+`subworkflows/local/` composition (adding local pre/post-processing steps
+where GATK-SV's own task does more than the bare tool invocation — check
+the corresponding `wdl/*.wdl` file, don't assume the nf-core module is a
+drop-in match), add a thin `workflows/call_*.nf` entry point, validate with
 `-stub-run`.
 
-Not yet started: cn.MOPS (needs a local module, no nf-core equivalent), the
-gCNV chain, `SVCluster`/`SVAnnotate` harmonisation, genotyping, panel
-bundle I/O, and the full `build_panel.nf` / `genotype_new_sample.nf`
-compositions.
+Not yet started: Scramble (needs coverage counts + Manta's VCF as
+additional inputs, not just the BAM — more involved than Wham), cn.MOPS
+(needs a local module, no nf-core equivalent), the gCNV chain,
+`SVCluster`/`SVAnnotate` harmonisation, genotyping, panel bundle I/O, and
+the full `build_panel.nf` / `genotype_new_sample.nf` compositions.
