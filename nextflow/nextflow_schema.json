@@ -25,11 +25,35 @@
             "exists": true,
             "description": "Reference genome FASTA index (.fai)."
         },
+        "reference_dict": {
+            "type": "string",
+            "format": "file-path",
+            "exists": true,
+            "description": "Reference genome sequence dictionary (.dict). Required by clustering workflows (GATK4_SVCLUSTER)."
+        },
         "primary_contigs_list": {
             "type": "string",
             "format": "file-path",
             "exists": true,
             "description": "List of canonical contigs (one per line), used e.g. by Wham (-c). Required by workflows/call_wham.nf; not needed by callers that don't use it."
+        },
+        "ped": {
+            "type": "string",
+            "format": "file-path",
+            "exists": true,
+            "description": "Pedigree file for the whole run. See README.md#pedigree-file. Required by clustering workflows."
+        },
+        "pesr_exclude_intervals": {
+            "type": "string",
+            "format": "file-path",
+            "exists": true,
+            "description": "Blacklist BED of intervals to exclude from PE/SR clustering (centromeres etc.). Required by clustering workflows."
+        },
+        "pesr_exclude_intervals_tbi": {
+            "type": "string",
+            "format": "file-path",
+            "exists": true,
+            "description": "Tabix index for pesr_exclude_intervals."
         },
         "outdir": {
             "type": "string",

@@ -561,8 +561,111 @@ the corresponding `wdl/*.wdl` file, don't assume the nf-core module is a
 drop-in match), add a thin `workflows/call_*.nf` entry point, validate with
 `-stub-run`.
 
-Not yet started: Scramble (needs coverage counts + Manta's VCF as
-additional inputs, not just the BAM — more involved than Wham), cn.MOPS
-(needs a local module, no nf-core equivalent), the gCNV chain,
-`SVCluster`/`SVAnnotate` harmonisation, genotyping, panel bundle I/O, and
-the full `build_panel.nf` / `genotype_new_sample.nf` compositions.
+### Harmonisation stage 1: per-caller, cross-sample clustering
+
+`subworkflows/local/vcfs_cluster_svcluster` and its standalone entry point
+`workflows/cluster_manta.nf` implement stage 1 of harmonisation (see
+[How GATK-SV's harmonisation actually works](#how-gatk-svs-harmonisation-actually-works)):
+clustering one caller's SV calls across all samples in a run into
+representative sites, mirroring GATK-SV's `ClusterPESR` workflow
+(`wdl/PESRClustering.wdl`). This is deliberately *not* stage 2
+(cross-caller merging, `CombineBatches`/`MergeBatchSites`) — that's not
+implemented yet.
+
+Steps, matching `ClusterPESR`:
+
+1. Ploidy table from the pedigree file (`PLOIDY_TABLE_FROM_PED`, wraps
+   GATK-SV's `ploidy_table_from_ped.py`).
+2. Per-sample format conversion (`FORMAT_SVTK_VCF_FOR_GATK`, wraps
+   GATK-SV's `format_svtk_vcf_for_gatk.py`) + interval-exclusion filtering
+   (`VCF_ENDS_BED` → `bedtools/intersect` → `EXCLUDED_VARIANT_IDS` →
+   `EXCLUDE_VARIANTS_BY_ID`, the same `bcftools query | awk | sort |
+   bedtools intersect | cut | sort | uniq | bcftools view` shape GATK-SV
+   uses inline in both `PreparePESRVcfs` and `ExcludeIntervalsByEndpoints`
+   — one local module chain, reused for both).
+3. `SVCluster` (`gatk4/svcluster`) across all samples' prepared VCFs in
+   one call.
+4. Post-clustering interval exclusion (same module chain as step 2,
+   applied a second time — mirrors `ExcludeIntervalsByEndpoints`).
+5. Format back to svtk (`FORMAT_GATK_VCF_FOR_SVTK`, wraps GATK-SV's
+   `format_gatk_vcf_for_svtk.py`).
+
+Deliberately not implemented: GATK-SV scatters step 3 by contig then
+concatenates, for parallelism at cohort scale. We run one `SVCluster` call
+across the whole genome instead — revisit if runtime on real data warrants
+it (same simplification already made for Wham's region scatter). GATK-SV's
+`min_size` filtering (drop SVs below a minimum length) is threaded through
+as a param but not yet applied — only interval exclusion is, so far.
+
+#### Vendored GATK-SV scripts
+
+Three of GATK-SV's own Python scripts (`ploidy_table_from_ped.py`,
+`format_svtk_vcf_for_gatk.py`, `format_gatk_vcf_for_svtk.py`) are copied
+verbatim into `bin/` — Nextflow auto-adds a pipeline's top-level `bin/` to
+every process's `PATH`, so they're callable by name from any process
+script without a hardcoded path. See `bin/README.md` for exactly which
+upstream commit they were vendored from, and for two known gaps:
+
+- **pysam version**: the two format-conversion scripts import `pysam`.
+  GATK-SV's own container pins `pysam==0.15.4` specifically (built from
+  source) because newer pysam/htslib reject VCF records with `END < POS`,
+  which occurs for `BND`/`CTX` (breakend/translocation) records. Our
+  container uses current pysam instead, for build simplicity.
+  `format_svtk_vcf_for_gatk.py`'s `_parse_bnd_ends()` already works around
+  part of this by manually text-parsing `BND`/`CTX` records rather than
+  trusting pysam's own parsed `END` value — but whether current pysam's
+  VCF *iteration itself* fails outright on such records (independent of
+  what the script does with them afterward) is untested. **Test this
+  empirically against real Manta/Wham output** (which does produce `BND`
+  records) before trusting this path's `BND` handling.
+- These scripts, plus `tabix`, run in our own image,
+  `drtomc/gatk-sv-nf-sv-scripts:0.1.0`, built from
+  `dockerfiles/sv-scripts/Dockerfile` and pushed to Docker Hub — see that
+  Dockerfile for build/push instructions if it needs updating.
+
+#### A local module, not a repurposed nf-core one
+
+`EXCLUDE_VARIANTS_BY_ID` (`bcftools view -i 'ID!=@file' | tabix`) is a
+small local module rather than nf-core's `bcftools/view`. The `ID!=@file`
+bcftools expression needs the exclusion file's staged path known at
+script-render time; nf-core's `bcftools/view` only exposes
+`--regions-file`/`--targets-file`/`--samples-file`, none of which map onto
+an arbitrary `-i`/`-e` expression referencing an external file. Generic
+nf-core modules cover the *tool*, not every *invocation shape* GATK-SV
+uses that tool with — check the actual flags a module's `script:` block
+constructs before assuming it fits, not just its name.
+
+#### A patched nf-core module
+
+`modules/nf-core/gatk4/svcluster/main.nf`'s `stub:` block is patched
+locally (diverges from `github.com/nf-core/modules`): upstream's stub only
+creates `*.vcf.gz`, but the module's own `output:` block also declares
+`clustered_vcf_index` (`*.vcf.gz.tbi`), so `-stub-run` failed with
+"Missing output file(s)" until fixed. Only the `stub:` block is
+touched — `script:` (the real invocation) is unmodified upstream code.
+
+#### Writing files from a subworkflow — do it in a process, not inline Groovy
+
+An earlier version of `vcfs_cluster_svcluster` built the bedtools genome
+file (`cut -f1,2 fasta.fai`) with inline Groovy
+(`fai.resolveSibling("genome.file"); out.text = ...`) directly in the
+subworkflow body. This silently wrote a `genome.file` next to whatever
+`fasta_fai` pointed at — for the test fixtures, `tests/data/`, polluting
+the source tree; on a real run, potentially a read-only or shared
+reference directory. `-stub-run` never caught it because the closure ran
+regardless of stub/real mode — inline Groovy in a subworkflow body isn't
+process-scoped, so it runs at graph-construction time either way, unlike a
+process's `script:`/`stub:` blocks. Fixed by moving it into a proper
+`GENOME_FILE` process (`modules/local/genome_file`), whose output lands in
+the task's own work directory like everything else. Prefer a process over
+inline Groovy file-writing whenever output is more than an in-memory value
+passed to the next channel step.
+
+### Not yet started
+
+Scramble (needs coverage counts + Manta's VCF as additional inputs, not
+just the BAM — more involved than Wham), cn.MOPS (needs a local module, no
+nf-core equivalent), the gCNV chain, harmonisation stage 2 (cross-caller
+merging, `CombineBatches`/`MergeBatchSites`), `SVAnnotate`, genotyping,
+panel bundle I/O, and the full `build_panel.nf` / `genotype_new_sample.nf`
+compositions.
