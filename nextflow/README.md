@@ -305,6 +305,7 @@ nextflow/
 │       └── cnmops/
 ├── subworkflows/
 │   └── local/
+│       ├── utils_input_channels/      # shared: sample sheet -> [meta,bam,bai] + reference channels
 │       ├── bam_call_manta/            # per-caller: BAM/CRAM -> raw caller VCF
 │       ├── bam_call_wham/
 │       ├── bam_call_scramble/         # needs coverage counts + manta VCF as well as BAM
@@ -323,6 +324,7 @@ nextflow/
     ├── call_scramble.nf           # standalone entry: sample sheet -> Scramble VCFs
     ├── call_cnmops.nf             # standalone entry: sample sheet -> cn.MOPS calls
     ├── call_gcnv.nf               # standalone entry: sample sheet -> gCNV calls (cohort mode)
+    ├── call_all.nf                # standalone entry: sample sheet -> VCFs from every implemented caller
     ├── build_panel.nf             # full build-panel pipeline
     └── genotype_new_sample.nf     # full genotype-new-sample pipeline
 ```
@@ -331,7 +333,17 @@ Each `workflows/call_*.nf` is a thin wrapper: read the sample sheet, call the
 matching `subworkflows/local/bam_call_*` subworkflow, publish the VCFs. This
 is the first slice to implement — it exercises the sample sheet schema, the
 module wrappers, and per-caller resource config, without needing the panel
-bundle, harmonisation, or genotyping logic yet. `build_panel.nf` and
+bundle, harmonisation, or genotyping logic yet.
+
+`call_all.nf` sits between the single-caller entries and `build_panel.nf` /
+`genotype_new_sample.nf`: it parses the sample sheet once (via
+`utils_input_channels`) and runs every implemented caller subworkflow
+against the same samples, so you get output from all callers without
+invoking each `call_*.nf` separately — but it still has no panel bundle,
+harmonisation, or genotyping. Each caller subworkflow it calls is still
+independently runnable through its own `call_*.nf`; nothing in `call_all.nf`
+is caller-specific logic, it's just composition. Add a new `include` +
+call block there as each caller subworkflow lands. `build_panel.nf` and
 `genotype_new_sample.nf` come later and compose the same subworkflows.
 
 ## nf-core modules
@@ -532,6 +544,13 @@ sheet (see `tests/data/samplesheet.tsv`):
     runtime and avoid regions Wham struggles with. We currently run
     `whamg` genome-wide in one shot instead. Revisit if runtime on real
     data warrants it.
+- `workflows/call_all.nf`, running every implemented caller (Manta, Wham)
+  against the same sample sheet in one invocation — see
+  [directory layout](#directory-layout) for what this is and isn't.
+  Sample-sheet parsing and reference-channel construction, previously
+  duplicated in `call_manta.nf` and `call_wham.nf`, are now factored into
+  `subworkflows/local/utils_input_channels`, shared by all three entry
+  points.
 
 This is the reference pattern for the remaining callers/evidence-collection
 subworkflows in the [directory layout](#directory-layout): vendor the

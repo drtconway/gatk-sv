@@ -12,8 +12,8 @@
 // genotyping yet -- just the caller subworkflow wired to a sample sheet.
 //
 
-include { samplesheetToList } from 'plugin/nf-schema'
-include { BAM_CALL_MANTA    } from '../subworkflows/local/bam_call_manta/main'
+include { UTILS_INPUT_CHANNELS } from '../subworkflows/local/utils_input_channels/main'
+include { BAM_CALL_MANTA       } from '../subworkflows/local/bam_call_manta/main'
 
 workflow {
     main:
@@ -22,20 +22,12 @@ workflow {
     // has to be derived rather than assumed to be projectDir itself.
     def pipelineRoot = "${projectDir}/.."
 
-    // 'family_id' and 'sample_id' are both tagged meta: in the schema, so
-    // samplesheetToList already merges them into one meta map per row:
-    // [ [family_id:.., id:..], bam, bai ]
-    samples = channel
-        .fromList(samplesheetToList(params.input, "${pipelineRoot}/assets/schema_samplesheet.json"))
-        .map { meta, bam, bai -> [ meta, file(bam), file(bai) ] }
-
-    fasta     = channel.of([ [ id: 'reference' ], file(params.fasta) ])
-    fasta_fai = channel.of([ [ id: 'reference' ], file(params.fasta_fai) ])
+    UTILS_INPUT_CHANNELS(params.input, pipelineRoot, params.fasta, params.fasta_fai)
 
     BAM_CALL_MANTA(
-        samples,
-        fasta,
-        fasta_fai
+        UTILS_INPUT_CHANNELS.out.samples,
+        UTILS_INPUT_CHANNELS.out.fasta,
+        UTILS_INPUT_CHANNELS.out.fasta_fai
     )
 
     BAM_CALL_MANTA.out.vcf.view { meta, vcf -> "Manta diploid SV VCF for ${meta.id}: ${vcf}" }

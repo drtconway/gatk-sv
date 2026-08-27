@@ -13,8 +13,8 @@
 // ../README.md#composability.
 //
 
-include { samplesheetToList } from 'plugin/nf-schema'
-include { BAM_CALL_WHAM     } from '../subworkflows/local/bam_call_wham/main'
+include { UTILS_INPUT_CHANNELS } from '../subworkflows/local/utils_input_channels/main'
+include { BAM_CALL_WHAM        } from '../subworkflows/local/bam_call_wham/main'
 
 workflow {
     main:
@@ -27,20 +27,12 @@ workflow {
         error "call_wham.nf requires --primary_contigs_list (see conf/modules.config)"
     }
 
-    // 'family_id' and 'sample_id' are both tagged meta: in the schema, so
-    // samplesheetToList already merges them into one meta map per row:
-    // [ [family_id:.., id:..], bam, bai ]
-    samples = channel
-        .fromList(samplesheetToList(params.input, "${pipelineRoot}/assets/schema_samplesheet.json"))
-        .map { meta, bam, bai -> [ meta, file(bam), file(bai) ] }
-
-    fasta     = channel.of([ [ id: 'reference' ], file(params.fasta) ])
-    fasta_fai = channel.of([ [ id: 'reference' ], file(params.fasta_fai) ])
+    UTILS_INPUT_CHANNELS(params.input, pipelineRoot, params.fasta, params.fasta_fai)
 
     BAM_CALL_WHAM(
-        samples,
-        fasta,
-        fasta_fai
+        UTILS_INPUT_CHANNELS.out.samples,
+        UTILS_INPUT_CHANNELS.out.fasta,
+        UTILS_INPUT_CHANNELS.out.fasta_fai
     )
 
     BAM_CALL_WHAM.out.vcf.view { meta, vcf -> "Wham VCF for ${meta.id}: ${vcf}" }
