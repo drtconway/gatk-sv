@@ -7,7 +7,9 @@
 // Run directly, e.g.:
 //   nextflow run workflows/call_all.nf -profile apptainer \
 //     --input samplesheet.tsv --fasta ref.fa --fasta_fai ref.fa.fai \
-//     --primary_contigs_list primary_contigs.list
+//     --primary_contigs_list primary_contigs.list \
+//     --manta_region_bed manta_region.bed.gz \
+//     --manta_region_bed_tbi manta_region.bed.gz.tbi
 //
 // This is not build_panel.nf / genotype_new_sample.nf -- no panel bundle,
 // harmonisation (SVCluster), or genotyping yet. It's the multi-caller
@@ -32,8 +34,10 @@ workflow {
     // has to be derived rather than assumed to be projectDir itself.
     def pipelineRoot = "${projectDir}/.."
 
-    if (!params.primary_contigs_list) {
-        error "call_all.nf requires --primary_contigs_list (needed by Wham; see conf/modules.config)"
+    ['primary_contigs_list', 'manta_region_bed', 'manta_region_bed_tbi'].each { p ->
+        if (!params[p]) {
+            error "call_all.nf requires --${p}"
+        }
     }
 
     UTILS_INPUT_CHANNELS(params.input, pipelineRoot, params.fasta, params.fasta_fai)
@@ -41,8 +45,15 @@ workflow {
     fasta     = UTILS_INPUT_CHANNELS.out.fasta
     fasta_fai = UTILS_INPUT_CHANNELS.out.fasta_fai
 
-    BAM_CALL_MANTA(samples, fasta, fasta_fai)
-    BAM_CALL_WHAM(samples, fasta, fasta_fai)
+    contig_list = channel.of([ [id: 'contigs'], file(params.primary_contigs_list) ])
+    manta_region_bed = channel.of([
+        [id: 'manta_region'],
+        file(params.manta_region_bed),
+        file(params.manta_region_bed_tbi)
+    ])
+
+    BAM_CALL_MANTA(samples, fasta, fasta_fai, manta_region_bed, contig_list)
+    BAM_CALL_WHAM(samples, fasta, fasta_fai, contig_list)
 
     BAM_CALL_MANTA.out.vcf.view { meta, vcf -> "Manta diploid SV VCF for ${meta.id}: ${vcf}" }
     BAM_CALL_WHAM.out.vcf.view  { meta, vcf -> "Wham VCF for ${meta.id}: ${vcf}" }

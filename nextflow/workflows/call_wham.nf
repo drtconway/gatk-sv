@@ -29,10 +29,13 @@ workflow {
 
     UTILS_INPUT_CHANNELS(params.input, pipelineRoot, params.fasta, params.fasta_fai)
 
+    contig_list = channel.of([ [id: 'contigs'], file(params.primary_contigs_list) ])
+
     BAM_CALL_WHAM(
         UTILS_INPUT_CHANNELS.out.samples,
         UTILS_INPUT_CHANNELS.out.fasta,
-        UTILS_INPUT_CHANNELS.out.fasta_fai
+        UTILS_INPUT_CHANNELS.out.fasta_fai,
+        contig_list
     )
 
     BAM_CALL_WHAM.out.vcf.view { meta, vcf -> "Wham VCF for ${meta.id}: ${vcf}" }

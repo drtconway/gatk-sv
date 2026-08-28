@@ -258,6 +258,28 @@ surface as opaque failures deep in the pipeline:
   `chr`, `name`, `DEL`, `DUP`, `CPX`, or `CHROM` as a substring.
 - Applies in both the sample sheet and the pedigree file.
 
+### Static reference resources
+
+Several `params.*` are static, sample-independent hg38 resource files (see
+[Panel bundle contents](#panel-bundle-contents) for the broader
+static-vs-per-sample split). They're GATK-SV's own resources — same files
+their WDL pipeline uses — published on public GCS buckets, so a plain
+`curl`/`wget` over HTTPS works with no GCP credentials needed:
+
+| Param | Source (GATK-SV's `resources_hg38.json` key) | URL |
+| --- | --- | --- |
+| `primary_contigs_list` | `primary_contigs_list` | `https://storage.googleapis.com/gcp-public-data--broad-references/hg38/v0/sv-resources/resources/v1/primary_contigs.list` |
+| `pesr_exclude_intervals` (+ `_tbi`) | `pesr_exclude_list` (+ `_index`) | `https://storage.googleapis.com/gatk-sv-resources-public/hg38/v0/sv-resources/resources/v1/PESR.encode.peri_all.repeats.delly.hg38.blacklist.sorted.bed.gz` (+ `.tbi`) |
+| `manta_region_bed` (+ `_tbi`) | `manta_region_bed` (+ `_index`) | `https://storage.googleapis.com/gcp-public-data--broad-references/hg38/v0/sv-resources/resources/v1/primary_contigs_plus_mito.bed.gz` (+ `.tbi`) |
+| `reference_dict` | `reference_dict` | `https://storage.googleapis.com/gcp-public-data--broad-references/hg38/v0/Homo_sapiens_assembly38.dict` |
+
+Fetch once, set the resulting paths in `conf/hpc.config` alongside
+`fasta`/`fasta_fai` (same treatment — one fixed value per cluster, not
+retyped on every invocation). Use GATK-SV's own files rather than
+regenerating equivalents, to match their validated behavior exactly (e.g.
+`manta_region_bed` is specifically primary contigs *plus mito*, not just
+`primary_contigs_list` reformatted as a BED).
+
 ## Where to simplify relative to upstream GATK-SV
 
 Candidates to prototype both ways before committing:
@@ -598,12 +620,21 @@ sheet (see `tests/data/samplesheet.tsv`):
     has no `--sample-name` flag and writes the BAM's own `SM` tag as the
     VCF's sample column; GATK-SV's task pipes through
     `bcftools reheader -s <(echo "sample_id")`
-    (`wdl/Manta.wdl:152`). This one wasn't caught until a real run: nothing
-    downstream needed the VCF's *internal* sample name to match `sample_id`
-    until `SVCluster`'s ploidy-table lookup
-    (`format_svtk_vcf_for_gatk.py`) did, which fails with
-    `KeyError: <sample_id>` when it doesn't — the ploidy table is keyed by
-    `sample_id`, not whatever the BAM's `SM` tag happens to be.
+    (`wdl/Manta.wdl:152`). Writes `ped_id`, not `sample_id` — see
+    [ped_id](#sample-sheet) — because the ploidy table downstream is keyed
+    by the pedigree file's `individual_id`, which the two real `KeyError`s
+    below both trace back to.
+  - Primary-contigs-only filtering
+    (`modules/local/vcf_primary_contigs_only`) — GATK-SV restricts Manta's
+    own calling to primary contigs + mito via `--callRegions`
+    (`wdl/Manta.wdl:137`, the `manta_region_bed` resource, wired into
+    `MANTA_GERMLINE`'s `target_bed` here too) but that alone didn't prevent
+    an ALT-contig record on a real run against real data
+    (`chr1_KI270706v1_random`, same `KeyError` shape as the sample-column
+    bug, but for a contig missing from the ploidy table instead of a
+    sample). Applied as a generic post-hoc filter after *every* caller
+    (Manta and Wham both), not just Manta, since nothing guarantees any
+    caller's own contig restriction is airtight.
   - **Not implemented**: GATK-SV also runs Manta's raw output through
     `convertInversion.py` (converts Manta's inversion-signaling `BND` pairs
     into proper `INV` records) before the reheader step. Skipped for now;
@@ -611,7 +642,7 @@ sheet (see `tests/data/samplesheet.tsv`):
 - `bam_call_wham` (wraps nf-core's `whamg`) and its standalone entry point
   `workflows/call_wham.nf`. Unlike Manta, GATK-SV's own Wham task
   (`wdl/Whamg.wdl`) does more than a plain `whamg` invocation, so this
-  subworkflow adds two correctness-critical steps around the nf-core
+  subworkflow adds correctness-critical steps around the nf-core
   module rather than using it as-is:
   - Contig restriction via `-c primary_contigs_list`, wired through
     `ext.args` in `conf/modules.config` (see the pitfalls above for why
@@ -621,7 +652,13 @@ sheet (see `tests/data/samplesheet.tsv`):
     defaults to the BAM's own `SM` tag for both the VCF sample column and
     the `TAGS` INFO field, and GATK-SV's downstream `svtk standardize_vcf`
     reads `TAGS` specifically for WHAM VCFs, so this is genuinely
-    correctness-critical, not cosmetic.
+    correctness-critical, not cosmetic. Writes `ped_id`, same reasoning as
+    Manta's rewrite above.
+  - Primary-contigs-only filtering (`modules/local/vcf_primary_contigs_only`,
+    shared with Manta) applied after the rewrite, as a robustness net —
+    Wham's own `-c` restriction doesn't necessarily guarantee zero
+    ALT-contig records either, even though it wasn't the caller that
+    actually produced one on real data so far.
   - **Deliberately not implemented**: GATK-SV also scatters Wham calls
     over an `include_bed_file` region whitelist and concatenates, to bound
     runtime and avoid regions Wham struggles with. We currently run

@@ -5,7 +5,10 @@
 //
 // Run directly, e.g.:
 //   nextflow run workflows/call_manta.nf -profile apptainer \
-//     --input samplesheet.tsv --fasta ref.fa --fasta_fai ref.fa.fai
+//     --input samplesheet.tsv --fasta ref.fa --fasta_fai ref.fa.fai \
+//     --primary_contigs_list primary_contigs.list \
+//     --manta_region_bed manta_region.bed.gz \
+//     --manta_region_bed_tbi manta_region.bed.gz.tbi
 //
 // This is the first slice of the composable pipeline described in
 // ../README.md#composability: no panel bundle, harmonisation, or
@@ -22,12 +25,27 @@ workflow {
     // has to be derived rather than assumed to be projectDir itself.
     def pipelineRoot = "${projectDir}/.."
 
+    ['primary_contigs_list', 'manta_region_bed', 'manta_region_bed_tbi'].each { p ->
+        if (!params[p]) {
+            error "call_manta.nf requires --${p}"
+        }
+    }
+
     UTILS_INPUT_CHANNELS(params.input, pipelineRoot, params.fasta, params.fasta_fai)
+
+    contig_list = channel.of([ [id: 'contigs'], file(params.primary_contigs_list) ])
+    manta_region_bed = channel.of([
+        [id: 'manta_region'],
+        file(params.manta_region_bed),
+        file(params.manta_region_bed_tbi)
+    ])
 
     BAM_CALL_MANTA(
         UTILS_INPUT_CHANNELS.out.samples,
         UTILS_INPUT_CHANNELS.out.fasta,
-        UTILS_INPUT_CHANNELS.out.fasta_fai
+        UTILS_INPUT_CHANNELS.out.fasta_fai,
+        manta_region_bed,
+        contig_list
     )
 
     BAM_CALL_MANTA.out.vcf.view { meta, vcf -> "Manta diploid SV VCF for ${meta.id}: ${vcf}" }

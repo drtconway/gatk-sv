@@ -35,7 +35,19 @@
             "type": "string",
             "format": "file-path",
             "exists": true,
-            "description": "List of canonical contigs (one per line), used e.g. by Wham (-c). Required by workflows/call_wham.nf; not needed by callers that don't use it."
+            "description": "List of canonical contigs (one per line). Used by Wham (-c) and to filter every caller's output VCF to primary contigs only (drops ALT/decoy/unplaced-contig records, which fail downstream ploidy-table lookups otherwise). Required by every caller subworkflow."
+        },
+        "manta_region_bed": {
+            "type": "string",
+            "format": "file-path",
+            "exists": true,
+            "description": "BED of primary contigs + mito, restricting Manta's own calling (--callRegions). Required by workflows/call_manta.nf."
+        },
+        "manta_region_bed_tbi": {
+            "type": "string",
+            "format": "file-path",
+            "exists": true,
+            "description": "Tabix index for manta_region_bed."
         },
         "ped": {
             "type": "string",

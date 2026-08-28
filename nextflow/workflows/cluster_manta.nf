@@ -10,7 +10,9 @@
 //     --input samplesheet.tsv --fasta ref.fa --fasta_fai ref.fa.fai \
 //     --primary_contigs_list primary_contigs.list --ped cohort.ped \
 //     --pesr_exclude_intervals exclude.bed.gz \
-//     --pesr_exclude_intervals_tbi exclude.bed.gz.tbi
+//     --pesr_exclude_intervals_tbi exclude.bed.gz.tbi \
+//     --manta_region_bed manta_region.bed.gz \
+//     --manta_region_bed_tbi manta_region.bed.gz.tbi
 //
 
 include { UTILS_INPUT_CHANNELS  } from '../subworkflows/local/utils_input_channels/main'
@@ -21,7 +23,11 @@ workflow {
     main:
     def pipelineRoot = "${projectDir}/.."
 
-    ['primary_contigs_list', 'ped', 'pesr_exclude_intervals', 'pesr_exclude_intervals_tbi', 'reference_dict'].each { p ->
+    [
+        'primary_contigs_list', 'ped', 'pesr_exclude_intervals',
+        'pesr_exclude_intervals_tbi', 'reference_dict',
+        'manta_region_bed', 'manta_region_bed_tbi'
+    ].each { p ->
         if (!params[p]) {
             error "cluster_manta.nf requires --${p}"
         }
@@ -29,13 +35,21 @@ workflow {
 
     UTILS_INPUT_CHANNELS(params.input, pipelineRoot, params.fasta, params.fasta_fai)
 
+    contig_list = channel.of([ [id: 'contigs'], file(params.primary_contigs_list) ])
+    manta_region_bed = channel.of([
+        [id: 'manta_region'],
+        file(params.manta_region_bed),
+        file(params.manta_region_bed_tbi)
+    ])
+
     BAM_CALL_MANTA(
         UTILS_INPUT_CHANNELS.out.samples,
         UTILS_INPUT_CHANNELS.out.fasta,
-        UTILS_INPUT_CHANNELS.out.fasta_fai
+        UTILS_INPUT_CHANNELS.out.fasta_fai,
+        manta_region_bed,
+        contig_list
     )
 
-    contig_list = channel.of([ [id: 'contigs'], file(params.primary_contigs_list) ])
     ped = channel.of([ [id: 'ped'], file(params.ped) ])
     exclude_intervals = channel.of([
         [id: 'exclude'],

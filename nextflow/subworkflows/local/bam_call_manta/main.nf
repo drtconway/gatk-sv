@@ -7,31 +7,43 @@
 // too rather than plumbing them through for no consumer.
 //
 // GATK-SV's task also rewrites the output VCF's sample column to
-// sample_id (wdl/Manta.wdl:152, `bcftools reheader`) since Manta has no
+// ped_id (wdl/Manta.wdl:152, `bcftools reheader`) since Manta has no
 // --sample-name flag and otherwise writes the BAM's own SM tag. This *is*
 // implemented here (MANTA_FIX_SAMPLE_ID) -- found via a real KeyError
-// downstream (SVCluster's ploidy-table lookup is keyed by sample_id) when
-// it wasn't, on a run against real data. See
+// downstream (SVCluster's ploidy-table lookup is keyed by the pedigree
+// file's individual_id) when it wasn't, on a run against real data. See
 // modules/local/manta/fix_sample_id/main.nf for the known gap this
 // doesn't yet cover (Manta's convertInversion.py post-processing).
 //
+// GATK-SV also restricts Manta's own calling to primary contigs (+ mito)
+// via --callRegions (wdl/Manta.wdl:137, the manta_region_bed resource).
+// Implemented here (target_bed on MANTA_GERMLINE). On top of that, output
+// is filtered a second time with VCF_PRIMARY_CONTIGS_ONLY -- callRegions
+// constrains Manta's own calling, but doesn't guarantee zero ALT-contig
+// records in practice; a real run on real data produced a
+// chr1_KI270706v1_random record even with GATK-SV's own equivalent
+// upstream restriction. The ploidy table downstream is keyed only by
+// primary_contigs_list, so any other contig fails there with a KeyError.
+//
 
-include { MANTA_GERMLINE      } from '../../../modules/nf-core/manta/germline/main'
-include { MANTA_FIX_SAMPLE_ID } from '../../../modules/local/manta/fix_sample_id/main'
+include { MANTA_GERMLINE          } from '../../../modules/nf-core/manta/germline/main'
+include { MANTA_FIX_SAMPLE_ID     } from '../../../modules/local/manta/fix_sample_id/main'
+include { VCF_PRIMARY_CONTIGS_ONLY } from '../../../modules/local/vcf_primary_contigs_only/main'
 
 workflow BAM_CALL_MANTA {
     take:
-    bam        // channel: [mandatory] [ meta, bam, bai ]
-    fasta      // channel: [mandatory] [ meta2, fasta ]
-    fasta_fai  // channel: [mandatory] [ meta3, fai ]
+    bam                // channel: [mandatory] [ meta, bam, bai ]
+    fasta              // channel: [mandatory] [ meta2, fasta ]
+    fasta_fai          // channel: [mandatory] [ meta3, fai ]
+    manta_region_bed     // channel: [mandatory] [ meta4, bed, bed_tbi ] -- primary contigs + mito, for Manta's --callRegions
+    primary_contigs_list  // channel: [mandatory] [ meta5, contig_list ] -- for post-hoc filtering
 
     main:
-    // Manta's target_bed/target_bed_tbi are for restricting calling to
-    // intervals (e.g. exome). GATK-SV runs Manta genome-wide, so we pass
-    // no target bed.
-    manta_input = bam.map { meta, bam_file, bai_file ->
-        [ meta, bam_file, bai_file, [], [] ]
-    }
+    manta_input = bam
+        .combine(manta_region_bed.map { meta, bed, tbi -> [ bed, tbi ] })
+        .map { meta, bam_file, bai_file, bed, tbi ->
+            [ meta, bam_file, bai_file, bed, tbi ]
+        }
 
     // fasta/fasta_fai are one reference shared across every sample, but
     // MANTA_GERMLINE declares them as ordinary (non-value) channel inputs.
@@ -54,8 +66,13 @@ workflow BAM_CALL_MANTA {
 
     MANTA_FIX_SAMPLE_ID(MANTA_GERMLINE.out.diploid_sv_vcf)
 
-    vcf = MANTA_FIX_SAMPLE_ID.out.vcf
-    vcf_tbi = MANTA_FIX_SAMPLE_ID.out.tbi
+    VCF_PRIMARY_CONTIGS_ONLY(
+        MANTA_FIX_SAMPLE_ID.out.vcf,
+        primary_contigs_list.map { meta, c -> c }.collect()
+    )
+
+    vcf = VCF_PRIMARY_CONTIGS_ONLY.out.vcf
+    vcf_tbi = VCF_PRIMARY_CONTIGS_ONLY.out.tbi
 
     emit:
     vcf       // channel: [ meta, vcf ]
