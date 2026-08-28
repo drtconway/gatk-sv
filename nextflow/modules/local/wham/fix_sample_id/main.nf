@@ -1,6 +1,6 @@
 //
 // Rewrite a Wham VCF's sample column and TAGS INFO field to the pipeline's
-// sample_id.
+// ped_id.
 //
 // Wham defaults to the BAM's own SM tag for both the VCF sample column and
 // the TAGS INFO field (which it also uses to store the sample identifier).
@@ -10,6 +10,13 @@
 // attributed to the wrong sample downstream. No nf-core module covers the
 // TAGS half (it's Wham-specific), so this is a small local process rather
 // than a generic bcftools wrapper.
+//
+// Uses ped_id, not sample_id (meta.id): see the note in
+// modules/local/manta/fix_sample_id/main.nf -- the ploidy table (and any
+// other PED-derived, individual_id-keyed lookup) is keyed by whatever the
+// pedigree file's individual_id is, which may differ from sample_id.
+// Output filenames stay keyed on sample_id/meta.id for readability; only
+// the VCF's internal sample column and TAGS field use ped_id.
 //
 process WHAM_FIX_SAMPLE_ID {
     tag "$meta.id"
@@ -33,11 +40,11 @@ process WHAM_FIX_SAMPLE_ID {
     script:
     def prefix = task.ext.prefix ?: "${meta.id}"
     """
-    echo "${meta.id}" > samples.txt
+    echo "${meta.ped_id}" > samples.txt
 
     bcftools reheader --samples samples.txt "${vcf}" \\
         | bcftools view \\
-        | sed -e 's/;TAGS=[^;]*;/;TAGS=${meta.id};/' \\
+        | sed -e 's/;TAGS=[^;]*;/;TAGS=${meta.ped_id};/' \\
         | bgzip -c > "${prefix}.wham.vcf.gz"
 
     tabix -p vcf "${prefix}.wham.vcf.gz"

@@ -39,7 +39,8 @@ include { FORMAT_GATK_VCF_FOR_SVTK } from '../../../modules/local/format_gatk_vc
 
 workflow VCFS_CLUSTER_SVCLUSTER {
     take:
-    vcfs               // channel: [ meta, vcf ] -- one per sample, same caller (meta.id = sample_id)
+    vcfs               // channel: [ meta, vcf ] -- one per sample, same caller (meta.id = sample_id;
+                       // VCF's internal sample column is meta.ped_id, see modules/local/*/fix_sample_id)
     ped                // channel: [ meta, ped ] -- one pedigree file for the whole run
     contig_list        // channel: [ meta, contig_list ]
     exclude_intervals  // channel: [ meta, bed, bed_tbi ] -- e.g. params.pesr_exclude_intervals

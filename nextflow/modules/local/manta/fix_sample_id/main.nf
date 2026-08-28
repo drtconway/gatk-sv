@@ -1,17 +1,25 @@
 //
-// Rewrite a Manta VCF's sample column to the pipeline's sample_id.
+// Rewrite a Manta VCF's sample column to the pipeline's ped_id.
 //
 // Manta has no --sample-name flag: it derives the VCF's sample column
-// from the BAM's own SM read-group tag, which may not match sample_id.
-// GATK-SV's own Manta task does this same rewrite inline
+// from the BAM's own SM read-group tag, which may not match anything the
+// pipeline uses. GATK-SV's own Manta task does this same rewrite inline
 // (wdl/Manta.wdl:152: `bcftools reheader -s <(echo "sample_id")`) --
 // downstream steps that key off the sample name (e.g. SVCluster's
 // ploidy-table lookup in format_svtk_vcf_for_gatk.py) fail with a
-// KeyError otherwise, since the ploidy table is keyed by sample_id, not
-// whatever the BAM's SM tag happens to be. Found via exactly that
-// failure on a real run -- nf-core's manta/germline module doesn't do
-// this rewrite, and nothing needed the VCF's *internal* sample name to
-// match sample_id until SVCluster's ploidy lookup did.
+// KeyError otherwise, since the ploidy table is keyed by whatever
+// individual_id the pedigree file uses.
+//
+// Uses ped_id, not sample_id (meta.id): GATK-SV assumes sample_id and the
+// PED file's individual_id are the same string, but our real data doesn't
+// -- sample_id is often a lab/external reference (e.g.
+// "23PS00385-RDN0206"), while the pedigree file uses a different internal
+// convention (e.g. "RDN0206-00"). The ploidy table is keyed by whatever
+// the PED file's individual_id is, so the VCF's sample column must match
+// that, not sample_id -- a real KeyError from exactly this mismatch (using
+// sample_id here) is what surfaced the need for ped_id at all. Output
+// filenames stay keyed on sample_id/meta.id for readability; only the
+// VCF's *internal* sample column uses ped_id.
 //
 // GATK-SV's Manta task also runs Manta output through convertInversion.py
 // (converts Manta's inversion-signaling BND pairs into proper INV
@@ -39,7 +47,7 @@ process MANTA_FIX_SAMPLE_ID {
     script:
     def prefix = task.ext.prefix ?: "${meta.id}"
     """
-    echo "${meta.id}" > samples.txt
+    echo "${meta.ped_id}" > samples.txt
 
     bcftools reheader --samples samples.txt "${vcf}" \\
         | bcftools view -Oz -o "${prefix}.manta.vcf.gz"

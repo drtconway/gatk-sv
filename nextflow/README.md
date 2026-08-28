@@ -169,14 +169,15 @@ intermediate hops are internal to the pipeline.
 
 ### Sample sheet
 
-Tab-separated (TSV), one row per sample:
+Tab-separated (TSV), one row per sample. Column order doesn't matter —
+`nf-schema` matches by header name, not position — but we write it as
+`family_id, ped_id, sample_id, bam, bai`:
 
 ```text
-family_id	sample_id	bam	bai
-FAM001	SAMPLE_A	/data/project1/SAMPLE_A.bam	/data/project1/SAMPLE_A.bam.bai
-FAM001	SAMPLE_B	/data/project1/SAMPLE_B.bam	/data/project1/SAMPLE_B.bam.bai
-FAM001	SAMPLE_C	/data/project1/SAMPLE_C.cram	/data/project1/SAMPLE_C.cram.crai
-SINGLETON01	SAMPLE_D	/data/project1/SAMPLE_D.bam	/data/project1/SAMPLE_D.bam.bai
+family_id	ped_id	sample_id	bam	bai
+FAM001	PED_A	23PS00385-RDN0206	/data/project1/23PS00385-RDN0206.bam	/data/project1/23PS00385-RDN0206.bam.bai
+FAM001		SAMPLE_B	/data/project1/SAMPLE_B.bam	/data/project1/SAMPLE_B.bam.bai
+SINGLETON01		SAMPLE_C	/data/project1/SAMPLE_C.cram	/data/project1/SAMPLE_C.cram.crai
 ```
 
 - `bam`: path to the alignment file, `.bam` or `.cram` — format inferred
@@ -190,6 +191,23 @@ SINGLETON01	SAMPLE_D	/data/project1/SAMPLE_D.bam	/data/project1/SAMPLE_D.bam.bai
 - `family_id`: redundant with the pedigree file but kept here too, so
   channel construction can group samples by family without a join, and so
   schema validation can catch a sample-sheet/pedigree mismatch early.
+- `ped_id` (optional): the pedigree file's `individual_id` for this sample,
+  if it differs from `sample_id`. Defaults to `sample_id` when blank/absent
+  (`SAMPLE_B`, `SAMPLE_C` above). GATK-SV itself assumes `sample_id` and
+  the PED file's `individual_id` are the same string — our real data
+  doesn't always agree: `sample_id` is often a lab/external reference
+  (`23PS00385-RDN0206`), while the pedigree file may use a different
+  internal family/relationship-position convention (`PED_A`, e.g.
+  `RDN0206-00`). Every step that keys off the pedigree file (ploidy
+  tables; the VCF sample-column rewrites in
+  `modules/local/{manta,wham}/fix_sample_id`, which write `ped_id`, not
+  `sample_id`, into the VCF's internal sample name) uses `ped_id`.
+  `sample_id` remains the identifier used for output filenames/display.
+  This exact mismatch caused a real `KeyError` in GATK-SV's
+  `format_svtk_vcf_for_gatk.py` on a real run before `ped_id` existed —
+  the ploidy table was keyed by the PED file's `individual_id`, the VCF's
+  sample column had been rewritten to `sample_id`, and the two didn't
+  match.
 
 ### Pedigree file
 
@@ -198,12 +216,15 @@ sheet:
 
 ```text
 #family_id  individual_id  paternal_id  maternal_id  sex  phenotype
-FAM001      SAMPLE_A       0            0            1    1
+FAM001      PED_A          0            0            1    1
 FAM001      SAMPLE_B       0            0            2    1
-FAM001      SAMPLE_C       SAMPLE_A     SAMPLE_B     1    2
-SINGLETON01 SAMPLE_D       0            0            2    1
+SINGLETON01 SAMPLE_C       0            0            2    1
 ```
 
+- `individual_id`: matches the sample sheet's `ped_id` column when present
+  (`PED_A` above, for the same sample whose `sample_id` is
+  `23PS00385-RDN0206` in the sample sheet example), otherwise `sample_id`
+  itself (`SAMPLE_B`, `SAMPLE_C`).
 - `sex`: 0=unknown, 1=male, 2=female. Sex chromosome aneuploidies should be
   entered as 0 (GATK-SV convention — downstream ploidy-aware genotyping
   reads this).
