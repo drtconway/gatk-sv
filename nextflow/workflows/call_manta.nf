@@ -1,12 +1,12 @@
 #!/usr/bin/env nextflow
 
 //
-// Standalone entry point: sample sheet -> Manta diploid SV VCFs.
+// Standalone entry point: sample sheet -> standardized Manta SV VCFs.
 //
 // Run directly, e.g.:
 //   nextflow run workflows/call_manta.nf -profile apptainer \
 //     --input samplesheet.tsv --fasta ref.fa --fasta_fai ref.fa.fai \
-//     --primary_contigs_list primary_contigs.list \
+//     --primary_contigs_fai contigs.fai \
 //     --manta_region_bed manta_region.bed.gz \
 //     --manta_region_bed_tbi manta_region.bed.gz.tbi
 //
@@ -25,7 +25,7 @@ workflow {
     // has to be derived rather than assumed to be projectDir itself.
     def pipelineRoot = "${projectDir}/.."
 
-    ['primary_contigs_list', 'manta_region_bed', 'manta_region_bed_tbi'].each { p ->
+    ['primary_contigs_fai', 'manta_region_bed', 'manta_region_bed_tbi'].each { p ->
         if (!params[p]) {
             error "call_manta.nf requires --${p}"
         }
@@ -33,7 +33,7 @@ workflow {
 
     UTILS_INPUT_CHANNELS(params.input, pipelineRoot, params.fasta, params.fasta_fai)
 
-    contig_list = channel.of([ [id: 'contigs'], file(params.primary_contigs_list) ])
+    contigs_fai = channel.of([ [id: 'contigs'], file(params.primary_contigs_fai) ])
     manta_region_bed = channel.of([
         [id: 'manta_region'],
         file(params.manta_region_bed),
@@ -45,8 +45,9 @@ workflow {
         UTILS_INPUT_CHANNELS.out.fasta,
         UTILS_INPUT_CHANNELS.out.fasta_fai,
         manta_region_bed,
-        contig_list
+        contigs_fai,
+        params.min_svsize
     )
 
-    BAM_CALL_MANTA.out.vcf.view { meta, vcf -> "Manta diploid SV VCF for ${meta.id}: ${vcf}" }
+    BAM_CALL_MANTA.out.vcf.view { meta, vcf -> "Standardized Manta VCF for ${meta.id}: ${vcf}" }
 }

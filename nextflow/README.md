@@ -269,9 +269,19 @@ their WDL pipeline uses — published on public GCS buckets, so a plain
 | Param | Source (GATK-SV's `resources_hg38.json` key) | URL |
 | --- | --- | --- |
 | `primary_contigs_list` | `primary_contigs_list` | `https://storage.googleapis.com/gcp-public-data--broad-references/hg38/v0/sv-resources/resources/v1/primary_contigs.list` |
+| `primary_contigs_fai` | `primary_contigs_fai` | `https://storage.googleapis.com/gcp-public-data--broad-references/hg38/v0/sv-resources/resources/v1/contig.fai` |
 | `pesr_exclude_intervals` (+ `_tbi`) | `pesr_exclude_list` (+ `_index`) | `https://storage.googleapis.com/gatk-sv-resources-public/hg38/v0/sv-resources/resources/v1/PESR.encode.peri_all.repeats.delly.hg38.blacklist.sorted.bed.gz` (+ `.tbi`) |
 | `manta_region_bed` (+ `_tbi`) | `manta_region_bed` (+ `_index`) | `https://storage.googleapis.com/gcp-public-data--broad-references/hg38/v0/sv-resources/resources/v1/primary_contigs_plus_mito.bed.gz` (+ `.tbi`) |
 | `reference_dict` | `reference_dict` | `https://storage.googleapis.com/gcp-public-data--broad-references/hg38/v0/Homo_sapiens_assembly38.dict` |
+
+`primary_contigs_list` (plain list) and `primary_contigs_fai` (`.fai` —
+contig *and length*) are both needed, for different tools: Wham's `-c`
+flag and `vcfs_cluster_svcluster`'s ploidy-table/format-conversion scripts
+tolerate either format, but `svtk standardize --contigs` (used by
+`SVTK_STANDARDIZE`, see [Status](#status)) needs lengths to build its
+output VCF header, so it specifically needs the `.fai` form.
+`min_svsize` (default `50`, GATK-SV's own default) has no file to
+fetch — it's a plain integer param, also consumed by `svtk standardize`.
 
 Fetch once, set the resulting paths in `conf/hpc.config` alongside
 `fasta`/`fasta_fai` (same treatment — one fixed value per cluster, not
@@ -614,56 +624,75 @@ sheet (see `tests/data/samplesheet.tsv`):
 
 - `bam_call_manta` (wraps nf-core's `manta/germline`) and its standalone
   entry point `workflows/call_manta.nf`. Confirmed working against real
-  BAM/CRAM data on HPC (Slurm + Apptainer). Like Wham, GATK-SV's own Manta
-  task (`wdl/Manta.wdl`) does more than the nf-core module:
-  - Sample-column rewrite (`modules/local/manta/fix_sample_id`) — Manta
-    has no `--sample-name` flag and writes the BAM's own `SM` tag as the
-    VCF's sample column; GATK-SV's task pipes through
-    `bcftools reheader -s <(echo "sample_id")`
-    (`wdl/Manta.wdl:152`). Writes `ped_id`, not `sample_id` — see
-    [ped_id](#sample-sheet) — because the ploidy table downstream is keyed
-    by the pedigree file's `individual_id`, which the two real `KeyError`s
-    below both trace back to.
-  - Primary-contigs-only filtering
-    (`modules/local/vcf_primary_contigs_only`) — GATK-SV restricts Manta's
-    own calling to primary contigs + mito via `--callRegions`
-    (`wdl/Manta.wdl:137`, the `manta_region_bed` resource, wired into
-    `MANTA_GERMLINE`'s `target_bed` here too) but that alone didn't prevent
-    an ALT-contig record on a real run against real data
-    (`chr1_KI270706v1_random`, same `KeyError` shape as the sample-column
-    bug, but for a contig missing from the ploidy table instead of a
-    sample). Applied as a generic post-hoc filter after *every* caller
-    (Manta and Wham both), not just Manta, since nothing guarantees any
-    caller's own contig restriction is airtight.
+  BAM/CRAM data on HPC (Slurm + Apptainer). GATK-SV restricts Manta's own
+  calling to primary contigs + mito via `--callRegions`
+  (`wdl/Manta.wdl:137`, the `manta_region_bed` resource, wired into
+  `MANTA_GERMLINE`'s `target_bed`). Raw output is then standardized with
+  `SVTK_STANDARDIZE` — see below.
   - **Not implemented**: GATK-SV also runs Manta's raw output through
     `convertInversion.py` (converts Manta's inversion-signaling `BND` pairs
-    into proper `INV` records) before the reheader step. Skipped for now;
+    into proper `INV` records) before standardization. Skipped for now;
     revisit once inversions specifically need validating.
 - `bam_call_wham` (wraps nf-core's `whamg`) and its standalone entry point
-  `workflows/call_wham.nf`. Unlike Manta, GATK-SV's own Wham task
-  (`wdl/Whamg.wdl`) does more than a plain `whamg` invocation, so this
-  subworkflow adds correctness-critical steps around the nf-core
-  module rather than using it as-is:
-  - Contig restriction via `-c primary_contigs_list`, wired through
-    `ext.args` in `conf/modules.config` (see the pitfalls above for why
-    this needed `nextflow.Nextflow.file()` rather than a bare `file()`
-    call).
-  - Sample-ID/TAGS rewrite (`modules/local/wham/fix_sample_id`) — Wham
-    defaults to the BAM's own `SM` tag for both the VCF sample column and
-    the `TAGS` INFO field, and GATK-SV's downstream `svtk standardize_vcf`
-    reads `TAGS` specifically for WHAM VCFs, so this is genuinely
-    correctness-critical, not cosmetic. Writes `ped_id`, same reasoning as
-    Manta's rewrite above.
-  - Primary-contigs-only filtering (`modules/local/vcf_primary_contigs_only`,
-    shared with Manta) applied after the rewrite, as a robustness net —
-    Wham's own `-c` restriction doesn't necessarily guarantee zero
-    ALT-contig records either, even though it wasn't the caller that
-    actually produced one on real data so far.
+  `workflows/call_wham.nf`. Contig restriction via `-c primary_contigs_list`
+  is wired through `ext.args` in `conf/modules.config` (see the pitfalls
+  above for why this needed `nextflow.Nextflow.file()` rather than a bare
+  `file()` call). Raw output is then standardized with `SVTK_STANDARDIZE`,
+  same as Manta.
   - **Deliberately not implemented**: GATK-SV also scatters Wham calls
     over an `include_bed_file` region whitelist and concatenates, to bound
     runtime and avoid regions Wham struggles with. We currently run
     `whamg` genome-wide in one shot instead. Revisit if runtime on real
     data warrants it.
+- `SVTK_STANDARDIZE` (`modules/local/svtk_standardize`), used by both
+  `bam_call_manta` and `bam_call_wham` — wraps GATK-SV's own `svtk
+  standardize` (`src/svtk/`, their `StandardizeVCFs` task,
+  `wdl/PESRPreprocessing.wdl`). In one step: rewrites the VCF's sample
+  column to `ped_id`, restricts to primary contigs, applies minimum-size
+  filtering, and sets the INFO fields GATK's `SVCluster` requires
+  (`SVTYPE`/`CHR2`/`END`/`STRANDS`/`SVLEN`/`ALGORITHMS`).
+  - **Supersedes three earlier point-fixes**
+    (`modules/local/{manta,wham}/fix_sample_id`'s `bcftools reheader`
+    rename, and `modules/local/vcf_primary_contigs_only`'s post-hoc
+    `bcftools` filter, all removed) that were each independently
+    reconstructing part of what `svtk standardize` already does correctly.
+    Discovered incomplete via three separate real failures on real data:
+    a `KeyError` on sample name (the rename target was wrong —
+    `sample_id` instead of `ped_id`), a `KeyError` on an ALT contig
+    (`chr1_KI270706v1_random` — Manta's own `--callRegions` restriction
+    didn't fully prevent it), and finally a GATK `IllegalArgumentException:
+    Expected ALGORITHMS field` — none of the three point-fixes set
+    `ALGORITHMS` at all, since that wasn't the bug any of them were
+    written to fix.
+  - **Not vendored like `bin/*.py`**: `svtk` is a real Python package
+    (Cython extension, `pybedtools`/`bedtools` dependency) that GATK-SV
+    itself builds from a multi-stage Dockerfile
+    (`dockerfiles/sv-pipeline/Dockerfile`) on top of their own base
+    images — not something to replicate from scratch. Runs in GATK-SV's
+    own published `sv_pipeline_docker` image
+    (`us.gcr.io/broad-dsde-methods/gatk-sv/sv-pipeline`) instead, which
+    is publicly pullable (verified — no GCP credentials needed).
+  - **Wham needs its raw, un-renamed output**, specifically: `svtk`'s own
+    Wham standardizer (`src/svtk/svtk/standardize/std_wham.py`) determines
+    genotypes by checking whether each *raw* sample name (from the input
+    VCF's own sample column) appears in the `TAGS` INFO field, then maps
+    to `--sample-names` (`ped_id`) as it writes output — it does this
+    matching itself. Feeding it already-renamed input (what the old
+    `WHAM_FIX_SAMPLE_ID` did) would only work by coincidence; verified
+    directly that feeding it Wham's true raw output produces the correct
+    genotype and sample rename.
+  - Needs a second static resource beyond `primary_contigs_list`:
+    `primary_contigs_fai` (`.fai` format — contig *and length*, not just
+    names — GATK-SV's `primary_contigs_fai` resource), since `svtk
+    standardize --contigs` needs lengths to build the standardized VCF
+    header. `primary_contigs_list` (plain list) is still needed separately
+    for Wham's `-c` flag and `vcfs_cluster_svcluster`'s ploidy-table/
+    format-conversion scripts, which happen to tolerate either format.
+  - Verified directly (not just wired/stub-tested): ran the actual `svtk
+    standardize` command against hand-built VCFs reproducing both real
+    failures (an ALT-contig Manta-shaped record, a `TAGS`-based
+    Wham-shaped record) in the real `sv_pipeline_docker` container before
+    committing this change.
 - `workflows/call_all.nf`, running every implemented caller (Manta, Wham)
   against the same sample sheet in one invocation — see
   [directory layout](#directory-layout) for what this is and isn't.

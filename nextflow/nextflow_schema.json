@@ -35,7 +35,18 @@
             "type": "string",
             "format": "file-path",
             "exists": true,
-            "description": "List of canonical contigs (one per line). Used by Wham (-c) and to filter every caller's output VCF to primary contigs only (drops ALT/decoy/unplaced-contig records, which fail downstream ploidy-table lookups otherwise). Required by every caller subworkflow."
+            "description": "Plain list of canonical contigs (one per line). Used by Wham (-c)."
+        },
+        "primary_contigs_fai": {
+            "type": "string",
+            "format": "file-path",
+            "exists": true,
+            "description": ".fai-format (contig, length, ...) list of canonical contigs. Used by svtk standardize (--contigs) to restrict every caller's output to primary contigs and to build the standardized VCF header. Required by every caller subworkflow."
+        },
+        "min_svsize": {
+            "type": "integer",
+            "default": 50,
+            "description": "Minimum SV size to retain, applied by svtk standardize (--min-size). GATK-SV default: 50."
         },
         "manta_region_bed": {
             "type": "string",
