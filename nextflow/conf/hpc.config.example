@@ -56,6 +56,14 @@ apptainer {
     // TODO: bind paths for any storage not under your home/project
     // directory that job scripts need to read/write, e.g.:
     // runOptions = '--bind /scratch --bind /data'
+
+    // TODO: where pulled/converted .img files are cached, so they persist
+    // across runs instead of being re-pulled (some of our images are
+    // multiple GB, e.g. GATK-SV's own sv_pipeline_docker -- see
+    // modules/local/svtk_standardize). Point this at a location with
+    // real quota; Nextflow's default cache location may not have room
+    // for more than a couple of large images on a shared cluster.
+    // cacheDir = '/path/to/shared/apptainer-cache'
 }
 
 params {
