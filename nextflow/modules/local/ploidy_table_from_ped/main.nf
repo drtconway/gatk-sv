@@ -45,12 +45,23 @@ process PLOIDY_TABLE_FROM_PED {
     script:
     def args = task.ext.args ?: ''
     def prefix = task.ext.prefix ?: "${meta.id}"
+    // retain_female_chr_y isn't a flag the vendored script itself
+    // supports -- it's WDL-task-level post-processing
+    // (wdl/TasksClusterBatch.wdl's CreatePloidyTableFromPed:
+    // `sed -e 's/\t0/\t1/g'`, rewriting every 0 ploidy value to 1 --
+    // for females this only affects chrY). GATK-SV's CombineBatches
+    // sets this true (its own ploidy table, separate from stage 1's);
+    // GatherBatchEvidence-derived tables (stage 1 here) leave it false.
+    def retain_female_chr_y = task.ext.retain_female_chr_y ?: false
+    def postprocess = retain_female_chr_y ? "sed -e 's/\\t0/\\t1/g' tmp.ploidy.tsv > ${prefix}.ploidy.tsv" : "mv tmp.ploidy.tsv ${prefix}.ploidy.tsv"
     """
     python3 ${script} \\
         --ped ${ped} \\
         --contigs ${contig_list} \\
-        --out ${prefix}.ploidy.tsv \\
+        --out tmp.ploidy.tsv \\
         ${args}
+
+    ${postprocess}
     """
 
     stub:

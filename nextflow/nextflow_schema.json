@@ -78,6 +78,48 @@
             "exists": true,
             "description": "Tabix index for pesr_exclude_intervals."
         },
+        "clustering_config_part1": {
+            "type": "string",
+            "format": "file-path",
+            "exists": true,
+            "description": "GroupedSVCluster clustering config (round 1), harmonisation stage 2. Required by workflows/combine_batches.nf."
+        },
+        "stratification_config_part1": {
+            "type": "string",
+            "format": "file-path",
+            "exists": true,
+            "description": "GroupedSVCluster stratification config (round 1)."
+        },
+        "clustering_config_part2": {
+            "type": "string",
+            "format": "file-path",
+            "exists": true,
+            "description": "GroupedSVCluster clustering config (round 2)."
+        },
+        "stratification_config_part2": {
+            "type": "string",
+            "format": "file-path",
+            "exists": true,
+            "description": "GroupedSVCluster stratification config (round 2)."
+        },
+        "clustering_track_sr": {
+            "type": "string",
+            "format": "file-path",
+            "exists": true,
+            "description": "Simple repeats BED, a GroupedSVCluster genomic context track."
+        },
+        "clustering_track_sd": {
+            "type": "string",
+            "format": "file-path",
+            "exists": true,
+            "description": "Segmental duplications BED, a GroupedSVCluster genomic context track."
+        },
+        "clustering_track_rm": {
+            "type": "string",
+            "format": "file-path",
+            "exists": true,
+            "description": "RepeatMasker BED, a GroupedSVCluster genomic context track."
+        },
         "outdir": {
             "type": "string",
             "format": "directory-path",

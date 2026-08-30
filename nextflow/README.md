@@ -367,7 +367,8 @@ nextflow/
 │       ├── counts_call_gcnv_cohort/   # gCNV training, build-panel only
 │       ├── counts_call_gcnv_case/     # gCNV scoring against a panel model, genotype-new-sample only
 │       ├── counts_call_cnmops/
-│       ├── vcfs_cluster_svcluster/    # SVCluster, used both within-panel and panel+case
+│       ├── vcfs_cluster_svcluster/    # SVCluster, used both within-panel and panel+case (harmonisation stage 1)
+│       ├── vcfs_combine_batches/      # cross-caller merge (harmonisation stage 2)
 │       ├── vcf_genotype/              # apply cutoffs -> genotyped VCF
 │       ├── vcf_annotate_svannotate/
 │       └── panel_bundle_io/           # read/write the versioned panel bundle (see Panel bundle contents)
@@ -380,6 +381,7 @@ nextflow/
     ├── call_all.nf                # standalone entry: sample sheet -> VCFs from every implemented caller
     ├── cluster_manta.nf           # standalone entry: sample sheet -> clustered Manta site VCF (harmonisation stage 1)
     ├── cluster_wham.nf            # standalone entry: sample sheet -> clustered Wham site VCF (harmonisation stage 1)
+    ├── combine_batches.nf         # standalone entry: sample sheet -> cross-caller merged site VCF (harmonisation stage 2)
     ├── build_panel.nf             # full build-panel pipeline
     └── genotype_new_sample.nf     # full genotype-new-sample pipeline
 ```
@@ -841,11 +843,102 @@ the task's own work directory like everything else. Prefer a process over
 inline Groovy file-writing whenever output is more than an in-memory value
 passed to the next channel step.
 
+### Harmonisation stage 2: cross-caller merge
+
+`subworkflows/local/vcfs_combine_batches` and its standalone entry point
+`workflows/combine_batches.nf` implement stage 2 of harmonisation:
+merging multiple callers' already-clustered site VCFs (Manta's and
+Wham's, from stage 1) into one cross-caller site list. Mirrors GATK-SV's
+`CombineBatches` workflow (`wdl/CombineBatches.wdl`). `combine_batches.nf`
+composes the full pipeline in one entry point — sample sheet in, one
+merged VCF out — running `BAM_CALL_MANTA`/`BAM_CALL_WHAM` and both
+callers' `VCFS_CLUSTER_SVCLUSTER` calls itself, same pattern as
+`call_all.nf`.
+
+Steps, matching `CombineBatches`:
+
+1. Naive join across callers (`GATK4_SVCLUSTER_JOIN`, near-zero overlap
+   thresholds — only merges exact-position duplicates).
+2. Real clustering pass (`GATK4_SVCLUSTER_SITES`, realistic overlap
+   thresholds, plus a `--variant-prefix` keyed by `cohort_name`).
+3. Two rounds of context-aware re-clustering
+   (`GATK4_GROUPEDSVCLUSTER_PART1`/`PART2`, wraps GATK's `GroupedSVCluster`
+   walker — see below), stratified by genomic context tracks (simple
+   repeats, segmental duplications, RepeatMasker).
+4. Format back to svtk (`FORMAT_GATK_VCF_FOR_SVTK`, reused from stage 1).
+
+This subworkflow builds its *own* ploidy table
+(`PLOIDY_TABLE_FROM_PED_COMBINE_BATCHES`, aliased — see below), with
+`retain_female_chr_y=true`, separate from stage 1's own ploidy table
+(`retain_female_chr_y` left at its default `false`). That flag isn't
+something the vendored `ploidy_table_from_ped.py` script itself
+supports — it's WDL-task-level post-processing
+(`wdl/TasksClusterBatch.wdl`'s `CreatePloidyTableFromPed`:
+`sed -e 's/\t0/\t1/g'`, rewriting every `0` ploidy value to `1`, which for
+females only affects chrY) that our `PLOIDY_TABLE_FROM_PED` module now
+supports via `task.ext.retain_female_chr_y`.
+
+Deliberately not implemented: GATK-SV's cross-*batch* SR evidence flag
+reconciliation (`ExtractSRVariantLists`/`CombineSRBothsidePass`/
+`SetSRVariantFlags`) is skipped — it exists to combine
+`BOTHSIDES_SUPPORT`/`HIGH_SR_BACKGROUND` flags across multiple *batches*
+of the same caller category (GATK-SV's own cohort-mode "batch" concept),
+which has no analog here: we have one VCF per *caller*, not per *batch*,
+and this pipeline doesn't have a first-class batch concept at all (see
+[Where to simplify](#where-to-simplify-relative-to-upstream-gatk-sv)).
+Also not scattered by contig — same simplification as stage 1.
+
+#### A new GATK subcommand, no nf-core module
+
+`modules/local/gatk4/grouped_sv_cluster` wraps GATK's `GroupedSVCluster`
+walker (marked **BETA — WORK IN PROGRESS** by GATK itself) — no nf-core
+module exists for it. Runs from the same container as `gatk4/svcluster`
+(`community.wave.seqera.io/library/gatk4-main_gcnvkernel`) — GATK-SV's own
+WDL runs both `SVCluster` and `GroupedSVCluster` from the same
+`gatk_docker` image with no separate image param, confirming they're
+different walkers in the same GATK jar, not separate tools. Verified
+directly: pulled the image and ran `gatk GroupedSVCluster --help` to
+confirm the tool and every flag name (`--track-intervals`, `--track-name`,
+`--stratify-overlap-fraction`, etc.) match what GATK-SV's WDL task uses,
+before writing the module.
+
+New static resources, same public-bucket pattern as everything else:
+`clustering_config_part1`/`_part2`, `stratification_config_part1`/`_part2`
+(TSV clustering/stratification configs), and three context-track BEDs
+(`clustering_track_sr`/`_sd`/`_rm` — simple repeats, segmental
+duplications, RepeatMasker; exposed as three separate params rather than
+one ordered list, so nothing can silently get the track/name pairing out
+of order).
+
+#### A wiring bug this surfaced: process-name-derived output filenames can collide across pipeline stages
+
+`GATK4_SVCLUSTER`'s (and `GATK4_GROUPEDSVCLUSTER`'s) output filename is
+derived from `meta.id` (`prefix = task.ext.prefix ?: "${meta.id}"`). An
+earlier version of this subworkflow reused the same `meta` (built once
+from `cohort_name`) across all five stages — so stage *N*'s output and
+stage *N+1*'s staged input both wanted the filename `cohort.vcf.gz`. Under
+`-stub-run` this produced a confusing "Missing output file(s) `*.vcf.gz`"
+error (the stub's `echo ... > cohort.vcf.gz` was overwriting its own
+staged input symlink in place, not producing a distinct new file the glob
+matcher could find) — and it would have broken real execution the same
+way, not just the stub. Fixed by giving each stage's `meta.id` a distinct,
+stage-specific suffix (matching GATK-SV's own `output_prefix` convention,
+e.g. `"~{cohort_name}.combine_batches.~{contig}.join_vcfs"`), renaming
+back to a plain `cohort_name` only for the final published output.
+**Lesson for any future multi-stage chain reusing the same process
+multiple times**: check whether the process derives its output filename
+from `meta.id`, and if so, make sure `meta.id` actually changes between
+producer and consumer stages — reusing one static `meta` across an entire
+chain is a trap specifically because it looks correct (every individual
+process call is well-formed) right up until two stages collide on a
+filename.
+
 ### Not yet started
 
 Scramble (needs coverage counts + Manta's VCF as additional inputs, not
 just the BAM — more involved than Wham), cn.MOPS (needs a local module, no
-nf-core equivalent), the gCNV chain, harmonisation stage 2 (cross-caller
-merging, `CombineBatches`/`MergeBatchSites`), `SVAnnotate`, genotyping,
-panel bundle I/O, and the full `build_panel.nf` / `genotype_new_sample.nf`
+nf-core equivalent), the gCNV chain, `MergeBatchSites` (GATK-SV's
+own site-list-only shortcut for cohorts that skip GATK-gCNV — not
+implemented; `CombineBatches`, above, is), `SVAnnotate`, genotyping, panel
+bundle I/O, and the full `build_panel.nf` / `genotype_new_sample.nf`
 compositions.
