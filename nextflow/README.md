@@ -378,6 +378,8 @@ nextflow/
     ├── call_cnmops.nf             # standalone entry: sample sheet -> cn.MOPS calls
     ├── call_gcnv.nf               # standalone entry: sample sheet -> gCNV calls (cohort mode)
     ├── call_all.nf                # standalone entry: sample sheet -> VCFs from every implemented caller
+    ├── cluster_manta.nf           # standalone entry: sample sheet -> clustered Manta site VCF (harmonisation stage 1)
+    ├── cluster_wham.nf            # standalone entry: sample sheet -> clustered Wham site VCF (harmonisation stage 1)
     ├── build_panel.nf             # full build-panel pipeline
     └── genotype_new_sample.nf     # full genotype-new-sample pipeline
 ```
@@ -712,14 +714,24 @@ drop-in match), add a thin `workflows/call_*.nf` entry point, validate with
 
 ### Harmonisation stage 1: per-caller, cross-sample clustering
 
-`subworkflows/local/vcfs_cluster_svcluster` and its standalone entry point
-`workflows/cluster_manta.nf` implement stage 1 of harmonisation (see
+`subworkflows/local/vcfs_cluster_svcluster` and its two standalone entry
+points, `workflows/cluster_manta.nf` and `workflows/cluster_wham.nf`,
+implement stage 1 of harmonisation (see
 [How GATK-SV's harmonisation actually works](#how-gatk-svs-harmonisation-actually-works)):
 clustering one caller's SV calls across all samples in a run into
 representative sites, mirroring GATK-SV's `ClusterPESR` workflow
 (`wdl/PESRClustering.wdl`). This is deliberately *not* stage 2
 (cross-caller merging, `CombineBatches`/`MergeBatchSites`) — that's not
-implemented yet.
+implemented yet. `vcfs_cluster_svcluster` is caller-agnostic (takes
+`caller` as a plain string param, e.g. `'manta'`/`'wham'`); adding
+`cluster_wham.nf` alongside `cluster_manta.nf` needed no changes to the
+subworkflow itself, only a near-identical entry point swapping
+`BAM_CALL_MANTA` for `BAM_CALL_WHAM` (and dropping `manta_region_bed`,
+Manta-only) — confirms the subworkflow's genericity holds for a second
+caller, not just designed-for-one-and-hoped.
+
+Both entry points confirmed working end-to-end against real BAM/CRAM data
+on HPC (Slurm + Apptainer), not just `-stub-run`.
 
 Steps, matching `ClusterPESR`:
 
