@@ -273,6 +273,13 @@ their WDL pipeline uses — published on public GCS buckets, so a plain
 | `pesr_exclude_intervals` (+ `_tbi`) | `pesr_exclude_list` (+ `_index`) | `https://storage.googleapis.com/gatk-sv-resources-public/hg38/v0/sv-resources/resources/v1/PESR.encode.peri_all.repeats.delly.hg38.blacklist.sorted.bed.gz` (+ `.tbi`) |
 | `manta_region_bed` (+ `_tbi`) | `manta_region_bed` (+ `_index`) | `https://storage.googleapis.com/gcp-public-data--broad-references/hg38/v0/sv-resources/resources/v1/primary_contigs_plus_mito.bed.gz` (+ `.tbi`) |
 | `reference_dict` | `reference_dict` | `https://storage.googleapis.com/gcp-public-data--broad-references/hg38/v0/Homo_sapiens_assembly38.dict` |
+| `clustering_config_part1` | `clustering_config_part1` | `https://storage.googleapis.com/gatk-sv-resources-public/hg38/v0/sv-resources/resources/v1/clustering_config.part_one.tsv` |
+| `clustering_config_part2` | `clustering_config_part2` | `https://storage.googleapis.com/gatk-sv-resources-public/hg38/v0/sv-resources/resources/v1/clustering_config.part_two.tsv` |
+| `stratification_config_part1` | `stratification_config_part1` | `https://storage.googleapis.com/gatk-sv-resources-public/hg38/v0/sv-resources/resources/v1/stratify_config.part_one.tsv` |
+| `stratification_config_part2` | `stratification_config_part2` | `https://storage.googleapis.com/gatk-sv-resources-public/hg38/v0/sv-resources/resources/v1/stratify_config.part_two.tsv` |
+| `clustering_track_sr` | `clustering_tracks[0]` | `https://storage.googleapis.com/gatk-sv-resources-public/hg38/v0/sv-resources/resources/v1/hg38.SimpRep.sorted.pad_100.merged.bed` |
+| `clustering_track_sd` | `clustering_tracks[1]` | `https://storage.googleapis.com/gatk-sv-resources-public/hg38/v0/sv-resources/resources/v1/hg38.SegDup.sorted.merged.bed` |
+| `clustering_track_rm` | `clustering_tracks[2]` | `https://storage.googleapis.com/gatk-sv-resources-public/hg38/v0/sv-resources/resources/v1/hg38.RM.sorted.merged.bed` |
 
 `primary_contigs_list` (plain list) and `primary_contigs_fai` (`.fai` —
 contig *and length*) are both needed, for different tools: Wham's `-c`
@@ -282,13 +289,37 @@ tolerate either format, but `svtk standardize --contigs` (used by
 output VCF header, so it specifically needs the `.fai` form.
 `min_svsize` (default `50`, GATK-SV's own default) has no file to
 fetch — it's a plain integer param, also consumed by `svtk standardize`.
+The `clustering_config_part*`/`stratification_config_part*`/
+`clustering_track_*` params are stage-2-only (`GroupedSVCluster`'s
+context-aware re-clustering — see [Harmonisation stage
+2](#harmonisation-stage-2-cross-caller-merge)); everything else is used
+starting from stage 1.
 
-Fetch once, set the resulting paths in `conf/hpc.config` alongside
-`fasta`/`fasta_fai` (same treatment — one fixed value per cluster, not
-retyped on every invocation). Use GATK-SV's own files rather than
-regenerating equivalents, to match their validated behavior exactly (e.g.
-`manta_region_bed` is specifically primary contigs *plus mito*, not just
-`primary_contigs_list` reformatted as a BED).
+#### `scripts/fetch_static_resources.sh`
+
+Fetches every resource in the table above into a target directory and
+prints a ready-to-use Nextflow config snippet (a `params { ... }` block)
+on stdout, pointing at the downloaded paths:
+
+```sh
+scripts/fetch_static_resources.sh /path/to/static-resources > conf/hpc.config
+```
+
+Idempotent — re-running skips any file already present in the target
+directory by name, so it's safe to re-run after an interrupted fetch, or
+to pick up newly-added resources (e.g. after this pipeline grows a new
+stage that needs one) without re-downloading everything. Doesn't fetch
+the reference genome itself (`fasta`/`fasta_fai`) — those aren't
+GATK-SV-specific and you likely already have a cluster-wide copy; set
+those yourself in the printed config (or merge the script's output into
+an existing `conf/hpc.config` rather than overwriting one that already
+has them — the script only emits the `params {}` block, it doesn't read
+or preserve anything already in the target file).
+
+Use GATK-SV's own files rather than regenerating equivalents, to match
+their validated behavior exactly (e.g. `manta_region_bed` is specifically
+primary contigs *plus mito*, not just `primary_contigs_list` reformatted
+as a BED).
 
 ## Where to simplify relative to upstream GATK-SV
 
