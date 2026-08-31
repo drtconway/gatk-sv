@@ -865,6 +865,45 @@ reverse-engineering GATK-SV's metrics-dependent formula. Revisit with real
 per-sample memory usage data once more samples have run, if 32GB turns out
 to be too high (waste) or still too low (rare, larger-input samples).
 
+#### The OOM above should have failed the task outright, and didn't — a `pipefail` gap
+
+Nextflow reported the OOM-killed `whamg` run above as a **successful**
+task. The actual failure only surfaced several steps later, in an
+unrelated downstream process, as a confusing `pysam` error ("invalid
+file ... is it VCF/BCF format?") on what turned out to be a truncated
+28-byte gzip stream. Root cause: `whamg`'s own `script:` block
+(`modules/nf-core/whamg/main.nf`) pipes its output through `bgzip`:
+
+```sh
+whamg ... | bgzip --threads ... --stdout > out.vcf.gz
+```
+
+Nextflow's default task shell is `['/bin/bash', '-ue']` — no `pipefail`.
+Bash's default pipeline exit status is the *last* command's only, so when
+Slurm SIGKILLed `whamg` mid-stream, `bgzip` just saw its stdin close early
+and exited 0 on the truncated data — bash then reported the whole pipeline
+(and therefore the whole task) as exit 0, hiding the OOM completely from
+Nextflow's success/failure tracking. **This is not a Slurm/HPC-profile
+weakness** — the same silent failure would happen with any executor,
+local runs included; it's purely a shell-strictness gap in how the task
+script is invoked, independent of *why* `whamg` died (OOM here, but a
+segfault or any other signal would be swallowed identically). Any other
+module using a `cmd1 | cmd2 > out` pattern has the same latent risk.
+
+Fixed globally, not per-module: `nextflow.config`'s top-level `process {}`
+block now sets `shell = ['/bin/bash', '-ueo', 'pipefail']`, so a killed
+first stage in *any* pipe now fails the task immediately with a non-zero
+exit code, the way Nextflow's own error handling expects. Chosen over
+patching individual modules' `script:` blocks (which would mean
+diverging every affected nf-core module from upstream, the exact
+one-off-patch cost the [patched `gatk4/svcluster`
+stub](#a-patched-nf-core-module) already documents) — a shell default
+is the natural place to fix a shell-semantics gap. Re-validated all three
+`-stub-run` entry points (`call_manta`, `cluster_wham`,
+`combine_batches`) afterward to confirm `-ueo pipefail` doesn't break any
+existing `script:`/`stub:` block (none rely on tolerating an unset
+variable or a failing pipeline stage).
+
 ### Harmonisation stage 2: cross-caller merge
 
 `subworkflows/local/vcfs_combine_batches` and its standalone entry point
