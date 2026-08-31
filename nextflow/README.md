@@ -843,6 +843,28 @@ the task's own work directory like everything else. Prefer a process over
 inline Groovy file-writing whenever output is more than an in-memory value
 passed to the next channel step.
 
+#### `whamg` needs much more memory than its nf-core label gives it
+
+A real HPC run of `cluster_wham.nf` (`~50x`-coverage WGS BAM) had `whamg`
+OOM-killed by Slurm (`.command.log`: `slurmstepd: error: Detected 1
+oom_kill event`) partway through — its own log showed it had reached
+"processed 1800Mb of the genome" out of ~3.1Gb, after first "Loading
+discordant reads into forest" (an in-memory index built across the whole
+genome, not something proportional to a chunk of input the way most tasks
+are). The `whamg` nf-core module uses `label 'process_medium'`, which
+`nextflow.config` sets to 12GB — shared with several other, much lighter
+processes, and not enough here. GATK-SV's own WDL sizing formula for this
+task (`wdl/Whamg.wdl`, `mem_per_bam_size * bam_size + mem_bam_offset`)
+defaults to a flat ~5GB (`mem_bam_offset=4.9`) when its Picard-metrics
+inputs (`pf_reads_improper_pairs`/`pct_exc_total`) aren't supplied — which
+we don't currently wire up — so it's both lower than what already failed
+and not a formula worth chasing for this. Fixed with a flat, generous
+per-process override (`memory = 32.GB`, plus explicit `cpus`/`time`) in
+`conf/modules.config`'s `withName: 'WHAMG'` block, rather than
+reverse-engineering GATK-SV's metrics-dependent formula. Revisit with real
+per-sample memory usage data once more samples have run, if 32GB turns out
+to be too high (waste) or still too low (rare, larger-input samples).
+
 ### Harmonisation stage 2: cross-caller merge
 
 `subworkflows/local/vcfs_combine_batches` and its standalone entry point
