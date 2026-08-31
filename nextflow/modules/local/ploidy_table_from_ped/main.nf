@@ -53,12 +53,26 @@ process PLOIDY_TABLE_FROM_PED {
     // sets this true (its own ploidy table, separate from stage 1's);
     // GatherBatchEvidence-derived tables (stage 1 here) leave it false.
     def retain_female_chr_y = task.ext.retain_female_chr_y ?: false
-    def postprocess = retain_female_chr_y ? "sed -e 's/\\t0/\\t1/g' tmp.ploidy.tsv > ${prefix}.ploidy.tsv" : "mv tmp.ploidy.tsv ${prefix}.ploidy.tsv"
+    // Intermediate file deliberately does NOT end in .ploidy.tsv: the
+    // output: block below globs *.ploidy.tsv, and an earlier version of
+    // this script wrote the raw output to tmp.ploidy.tsv -- which itself
+    // matches that glob, so with retain_female_chr_y=true (both this file
+    // AND the sed-processed final file present) the ploidy_table output
+    // channel emitted TWO files, not one. Downstream, GATK4_SVCLUSTER's
+    // `path ploidy_table` single-value input silently staged both and
+    // interpolated them space-joined into `--ploidy-table x y` --
+    // SVCluster took the second as a stray positional argument and failed
+    // ("Positional arguments were provided ... but no positional argument
+    // is defined for this tool"). Only surfaced on a real run: -stub-run's
+    // stub: block only ever touches one file, never exercising the glob
+    // against two real candidates.
+    def raw = "raw.ploidy_table.tsv"
+    def postprocess = retain_female_chr_y ? "sed -e 's/\\t0/\\t1/g' ${raw} > ${prefix}.ploidy.tsv" : "mv ${raw} ${prefix}.ploidy.tsv"
     """
     python3 ${script} \\
         --ped ${ped} \\
         --contigs ${contig_list} \\
-        --out tmp.ploidy.tsv \\
+        --out ${raw} \\
         ${args}
 
     ${postprocess}

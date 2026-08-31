@@ -970,6 +970,37 @@ supports — it's WDL-task-level post-processing
 females only affects chrY) that our `PLOIDY_TABLE_FROM_PED` module now
 supports via `task.ext.retain_female_chr_y`.
 
+#### A real bug: the ploidy table's own output glob matched its intermediate file too
+
+A real HPC run of `combine_batches.nf` failed with `SVCluster`'s `A USER
+ERROR has occurred: Illegal argument value: Positional arguments were
+provided ',tmp.ploidy.tsv}' but no positional argument is defined for this
+tool` — the actual `--ploidy-table` invocation showed two filenames
+(`ped.ploidy.tsv tmp.ploidy.tsv`) where `SVCluster` expects exactly one.
+Root cause: `PLOIDY_TABLE_FROM_PED`'s `output:` block declares `path("*.
+ploidy.tsv")`, and — only when `retain_female_chr_y=true`, i.e. only at
+this subworkflow's `PLOIDY_TABLE_FROM_PED_COMBINE_BATCHES` call site — the
+`script:` block's own intermediate file was itself named `tmp.ploidy.tsv`,
+which matches that same glob alongside the real, sed-processed
+`${prefix}.ploidy.tsv`. So the `ploidy_table` output channel silently
+emitted *two* files instead of one; `GATK4_SVCLUSTER`'s `path
+ploidy_table` (a single-value input) staged both, and Groovy's
+space-joined interpolation of the two into `--ploidy-table x y` is what
+`SVCluster` then choked on. Invisible under `-stub-run`, whose `stub:`
+block only ever `touch`es one file — the glob never had two real
+candidates to collide on. Fixed by renaming the intermediate file to
+`raw.ploidy_table.tsv` (doesn't match `*.ploidy.tsv`), then verified
+directly with a small standalone real (non-stub, `-profile docker`)
+workflow isolating just this process with `retain_female_chr_y=true`
+against a female sample in `tests/data/cohort.ped` — confirmed exactly one
+file is now emitted, and that the female chrY ploidy rewrite (`0` → `1`)
+still applies correctly. **Lesson for any process whose `output:` block
+uses a glob**: check every intermediate filename the `script:` block
+creates, not just the declared final output name, for accidental matches —
+especially under a config-driven branch (`task.ext.*`) that only some call
+sites exercise, since a glob collision that's specific to one branch is
+easy to miss when validating with the default/most-common configuration.
+
 Deliberately not implemented: GATK-SV's cross-*batch* SR evidence flag
 reconciliation (`ExtractSRVariantLists`/`CombineSRBothsidePass`/
 `SetSRVariantFlags`) is skipped — it exists to combine
