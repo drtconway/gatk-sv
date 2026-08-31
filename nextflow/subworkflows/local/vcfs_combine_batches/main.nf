@@ -7,6 +7,9 @@
 // vs stage-2 distinction.
 //
 // Steps, matching CombineBatches:
+//   0. Re-add GATK-required fields (ECN etc) to each caller's already-
+//      clustered, svtk-format VCF (FormatVcfForGatk / FORMAT_SVTK_VCF_FOR_GATK,
+//      reused from vcfs_cluster_svcluster -- see note below)
 //   1. Naive join across callers (SVCluster, near-zero overlap
 //      thresholds -- only merges exact-position duplicates)
 //   2. Real clustering pass (SVCluster, realistic overlap thresholds)
@@ -15,6 +18,23 @@
 //      duplications, RepeatMasker)
 //   5. Format back to svtk (GatkToSvtkVcf / FORMAT_GATK_VCF_FOR_SVTK,
 //      reused from vcfs_cluster_svcluster)
+//
+// Step 0 exists because vcfs_cluster_svcluster's own stage-1 output
+// (caller_vcfs, this subworkflow's input) has already been converted back
+// to svtk format for publishing -- and that conversion (FORMAT_GATK_VCF_FOR_SVTK
+// / format_gatk_vcf_for_svtk.py) explicitly strips the ECN FORMAT field,
+// which GATK's SVCluster/GroupedSVCluster require on every genotype. In
+// GATK-SV's own pipeline this round-trip doesn't bite: their real
+// pesr_vcfs/depth_vcfs inputs to CombineBatches come from GenotypeBatch's
+// GenotypeSVs task (a GATK walker that re-adds ECN internally from the
+// ploidy table as part of genotyping), not from ClusterPESR's own
+// already-published svtk output directly. We don't implement genotyping
+// yet, so caller_vcfs here IS stage 1's final svtk output -- meaning we
+// have to re-run the svtk->GATK conversion ourselves before any of
+// CombineBatches' own clustering steps, or SVCluster fails with
+// "IllegalArgumentException: Genotype missing required field ECN" (found
+// on a real HPC run; invisible under -stub-run, whose stub VCFs carry no
+// real FORMAT fields to be missing in the first place).
 //
 // Deliberately not implemented: GATK-SV's cross-*batch* SR evidence flag
 // reconciliation (ExtractSRVariantLists/CombineSRBothsidePass/
@@ -34,6 +54,15 @@
 // vcfs_cluster_svcluster's own PLOIDY_TABLE_FROM_PED call (default false)
 // isn't affected by the same config rule.
 include { PLOIDY_TABLE_FROM_PED as PLOIDY_TABLE_FROM_PED_COMBINE_BATCHES } from '../../../modules/local/ploidy_table_from_ped/main'
+// Aliased for tag/publishDir clarity, not because it needs different
+// config from vcfs_cluster_svcluster's own FORMAT_SVTK_VCF_FOR_GATK call
+// (both use the default ext -- no per-name override needed for this one).
+include { FORMAT_SVTK_VCF_FOR_GATK as FORMAT_SVTK_VCF_FOR_GATK_COMBINE_BATCHES } from '../../../modules/local/format_svtk_vcf_for_gatk/main'
+// FORMAT_SVTK_VCF_FOR_GATK doesn't emit a .tbi (see vcfs_cluster_svcluster,
+// where a downstream interval-exclusion step's own `tabix` call happens to
+// produce one) -- index explicitly, since GATK4_SVCLUSTER_JOIN's `path
+// indices` input needs one for each VCF.
+include { TABIX as TABIX_GATK_CALLER_VCFS } from '../../../modules/local/tabix/main'
 // Both aliased, not plain GATK4_SVCLUSTER: each needs its own overlap
 // thresholds via conf/modules.config's ext.args (JOIN: near-zero
 // thresholds, exact-duplicate-only; SITES: realistic thresholds, real
@@ -61,6 +90,7 @@ workflow VCFS_COMBINE_BATCHES {
     track_names                 // val: List<String>, names matching track_bed_files order (e.g. ['SR','SD','RM'])
     cohort_name                 // val: String, used as the output prefix
     ploidy_script                    // val: absolute path to bin/ploidy_table_from_ped.py
+    format_svtk_vcf_for_gatk_script  // val: absolute path to bin/format_svtk_vcf_for_gatk.py
     format_gatk_vcf_for_svtk_script  // val: absolute path to bin/format_gatk_vcf_for_svtk.py
 
     main:
@@ -72,6 +102,23 @@ workflow VCFS_COMBINE_BATCHES {
     // females only affects chrY).
     PLOIDY_TABLE_FROM_PED_COMBINE_BATCHES(ped, contig_list.map { meta, c -> c }.collect(), file(ploidy_script))
     ploidy_table = PLOIDY_TABLE_FROM_PED_COMBINE_BATCHES.out.ploidy_table.map { meta, t -> t }.collect()
+
+    // --- Step 0: re-add ECN (and other GATK-required fields) ---
+    // See the top-of-file note for why this is necessary here even though
+    // vcfs_cluster_svcluster already ran the equivalent conversion once
+    // (stage 1's own SVCluster call) -- its *published* output has since
+    // been converted back to svtk format, which strips ECN.
+    FORMAT_SVTK_VCF_FOR_GATK_COMBINE_BATCHES(
+        caller_vcfs.map { meta, vcf, tbi -> [ meta, vcf ] },
+        ploidy_table.map { t -> [ [id: 'ploidy'], t ] },
+        file(format_svtk_vcf_for_gatk_script)
+    )
+    // FORMAT_SVTK_VCF_FOR_GATK doesn't emit a .tbi (see vcfs_cluster_svcluster,
+    // where a downstream interval-exclusion step's own `tabix` call happens
+    // to produce one) -- index explicitly, since GATK4_SVCLUSTER_JOIN's
+    // `path indices` input needs one for each VCF.
+    TABIX_GATK_CALLER_VCFS(FORMAT_SVTK_VCF_FOR_GATK_COMBINE_BATCHES.out.vcf)
+    gatk_caller_vcfs = TABIX_GATK_CALLER_VCFS.out.vcf
 
     // --- Step 1: naive join across callers ---
     // Near-zero overlap thresholds: only merges exact-position
@@ -86,7 +133,7 @@ workflow VCFS_COMBINE_BATCHES {
     // "cohort.vcf.gz") -- a real bug this way even under -stub-run, found
     // via "Missing output file(s) *.vcf.gz" where the actual problem was
     // the stub overwriting its own staged input in place.
-    join_input = caller_vcfs
+    join_input = gatk_caller_vcfs
         .map { meta, vcf, tbi -> [ vcf, tbi ] }
         .collect(flat: false)
         .map { pairs -> [ [id: "${cohort_name}.combine_batches.join_vcfs"], pairs.collect { it[0] }, pairs.collect { it[1] } ] }

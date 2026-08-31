@@ -1001,6 +1001,61 @@ especially under a config-driven branch (`task.ext.*`) that only some call
 sites exercise, since a glob collision that's specific to one branch is
 easy to miss when validating with the default/most-common configuration.
 
+#### A real bug: `ECN` missing because our stage 1 round-trips through svtk format, GATK-SV's doesn't
+
+A real HPC run of `combine_batches.nf` got past the ploidy-table fix above
+and failed one step later, in `GATK4_SVCLUSTER_SITES`, with `SVCluster`'s
+`java.lang.IllegalArgumentException: Genotype missing required field ECN`.
+`ECN` (Expected Copy Number) is a per-genotype `FORMAT` field GATK's
+clustering walkers require to compute sample overlap — added by
+`FORMAT_SVTK_VCF_FOR_GATK`/`format_svtk_vcf_for_gatk.py` from the ploidy
+table, and explicitly *stripped* by `FORMAT_GATK_VCF_FOR_SVTK`/
+`format_gatk_vcf_for_svtk.py` (`remove_formats.add('ECN')`) when
+converting back to svtk format for publishing.
+
+Root cause: `vcfs_cluster_svcluster` (stage 1) converts to GATK format,
+clusters, then converts *back* to svtk format at its own published
+output — that's `caller_vcfs`, this subworkflow's input — so `ECN` is
+already gone by the time `combine_batches.nf` hands it to stage 2.
+Checking GATK-SV's own WDL for how they avoid this: `CombineBatches.wdl`
+takes `pesr_vcfs`/`depth_vcfs` as plain inputs with no visible
+GATK-formatting call of its own (its `import "FormatVcfForGatk.wdl"` is
+unused dead code in the current file) — because in their real pipeline
+those inputs are `GenotypeBatch.genotyped_pesr_vcf`, and `GenotypeBatch`'s
+own `GenotypeSVs` GATK task re-adds `ECN` internally as part of
+genotyping. In other words: **GATK-SV's real ClusterBatch → CombineBatches
+path always has a genotyping stage in between that happens to restore
+`ECN`**; it's not that their stage 2 tolerates svtk-format input. We don't
+implement genotyping yet, so `caller_vcfs` here really is stage 1's final,
+`ECN`-stripped output, and stage 2 has to redo the svtk→GATK conversion
+itself before any of `CombineBatches`' own clustering steps can run.
+
+Fixed by adding a step 0 to `vcfs_combine_batches`: re-run
+`FORMAT_SVTK_VCF_FOR_GATK` (aliased `FORMAT_SVTK_VCF_FOR_GATK_COMBINE_BATCHES`,
+reusing the same vendored script and stage-2 ploidy table) on each
+caller's VCF before `GATK4_SVCLUSTER_JOIN`. Confirmed safe to reuse
+as-is on a multi-sample, cross-sample-clustered VCF (not just the
+per-sample VCFs it's used on at stage 1): the script's `convert()`
+function iterates `record.samples.items()` generically, with no
+single-sample assumption anywhere in it. `FORMAT_SVTK_VCF_FOR_GATK` itself
+emits no `.tbi` (stage 1 gets one for free from a downstream
+interval-exclusion step's own `tabix` call, which stage 2 doesn't have),
+so a small new local module, `modules/local/tabix` (`TABIX`), was added
+to index explicitly — preferred over nf-core's `tabix/tabix` (checked
+first; it's deprecated and now hard-asserts false, pointing at
+`htslib/bgziptabix` instead) or `htslib/bgziptabix` itself (a general
+compress-and/or-index module with file-type-sniffing branches that don't
+apply when the input is always already bgzipped, as it is here) — a
+plain `tabix <file>` local module matches the existing small-local-module
+style already used for `EXCLUDE_VARIANTS_BY_ID`/`GENOME_FILE`. Invisible
+under `-stub-run`: stub VCFs carry no real `FORMAT` fields to begin with,
+so there's nothing for GATK to find missing. **Lesson for any subworkflow
+that consumes another subworkflow's *published* (svtk-format) output as
+input to more GATK-walker processing**: check whether the producer's
+publish step stripped anything the consumer's GATK tools need back — the
+producer and consumer being individually correct doesn't mean the round
+trip between them is lossless.
+
 Deliberately not implemented: GATK-SV's cross-*batch* SR evidence flag
 reconciliation (`ExtractSRVariantLists`/`CombineSRBothsidePass`/
 `SetSRVariantFlags`) is skipped — it exists to combine

@@ -129,6 +129,7 @@ workflow {
         ['SR', 'SD', 'RM'],
         'cohort',
         "${pipelineRoot}/bin/ploidy_table_from_ped.py",
+        "${pipelineRoot}/bin/format_svtk_vcf_for_gatk.py",
         "${pipelineRoot}/bin/format_gatk_vcf_for_svtk.py"
     )
 
