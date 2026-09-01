@@ -280,6 +280,8 @@ their WDL pipeline uses — published on public GCS buckets, so a plain
 | `clustering_track_sr` | `clustering_tracks[0]` | `https://storage.googleapis.com/gatk-sv-resources-public/hg38/v0/sv-resources/resources/v1/hg38.SimpRep.sorted.pad_100.merged.bed` |
 | `clustering_track_sd` | `clustering_tracks[1]` | `https://storage.googleapis.com/gatk-sv-resources-public/hg38/v0/sv-resources/resources/v1/hg38.SegDup.sorted.merged.bed` |
 | `clustering_track_rm` | `clustering_tracks[2]` | `https://storage.googleapis.com/gatk-sv-resources-public/hg38/v0/sv-resources/resources/v1/hg38.RM.sorted.merged.bed` |
+| `sd_locs_vcf` (+ `_idx`) | `sd_locs_vcf` | `https://storage.googleapis.com/gcp-public-data--broad-references/hg38/v0/Homo_sapiens_assembly38.dbsnp138.vcf` (+ `.idx`) |
+| `preprocessed_intervals` | `preprocessed_intervals` | `https://storage.googleapis.com/gatk-sv-resources-public/hg38/v0/sv-resources/resources/v1/preprocessed_intervals.interval_list` |
 
 `primary_contigs_list` (plain list) and `primary_contigs_fai` (`.fai` —
 contig *and length*) are both needed, for different tools: Wham's `-c`
@@ -292,8 +294,12 @@ fetch — it's a plain integer param, also consumed by `svtk standardize`.
 The `clustering_config_part*`/`stratification_config_part*`/
 `clustering_track_*` params are stage-2-only (`GroupedSVCluster`'s
 context-aware re-clustering — see [Harmonisation stage
-2](#harmonisation-stage-2-cross-caller-merge)); everything else is used
-starting from stage 1.
+2](#harmonisation-stage-2-cross-caller-merge)); `sd_locs_vcf`/
+`preprocessed_intervals` are used by `bam_collect_evidence` (see
+[Status](#status)); everything else is used starting from stage 1.
+`sd_locs_vcf` is the one exception to "everything here is bgzip/`.tbi`" —
+it's a plain, uncompressed VCF with a GATK-style `.idx` sibling index, not
+`.vcf.gz`/`.tbi` like every other VCF this pipeline handles.
 
 #### `scripts/fetch_static_resources.sh`
 
@@ -1111,12 +1117,96 @@ chain is a trap specifically because it looks correct (every individual
 process call is well-formed) right up until two stages collide on a
 filename.
 
+### Per-sample evidence collection (`bam_collect_evidence`)
+
+`subworkflows/local/bam_collect_evidence` and its standalone entry point
+`workflows/collect_evidence.nf` collect raw per-sample PE (discordant
+pairs)/SR (split reads)/SD (site depth at known SNP sites)/RD (binned
+coverage) evidence from a BAM/CRAM — the sibling of `bam_call_manta`/
+`bam_call_wham` at the same tier (one BAM in, per-sample output out), not
+downstream of clustering/harmonisation. Mirrors the evidence-collection
+half of GATK-SV's `GatherSampleEvidence` workflow
+(`wdl/GatherSampleEvidence.wdl`), narrowed to just PE/SR/SD/RD collection
+(not the SV calling it also bundles — already covered here by
+`bam_call_manta`/`bam_call_wham`).
+
+This is deliberately **not** wired into anything downstream yet — no
+merge step, no genotyping. It exists because a future genotyping stage
+(GATK's `TrainSVGenotyping`/`GenotypeSVs` walkers) needs this evidence,
+merged panel-wide, as an input; collecting it per-sample now is the first
+of several unbuilt pieces on that path (see [Not yet
+started](#not-yet-started)). See the subworkflow's own top-of-file note
+for the full reasoning chain (traced through GATK-SV's WDL: their real
+`ClusterBatch` → `GenotypeBatch` → `CombineBatches` ordering, and why
+`ECN` — see the fix above — is a symptom of us not yet having a
+genotyping stage in between).
+
+Two GATK walkers:
+
+1. `CollectSVEvidence` (`GATK_COLLECT_SV_EVIDENCE`) → PE/SR/SD in one BAM
+   pass. Reproduces `wdl/CollectSVEvidence.wdl`'s `RunCollectSVEvidence`
+   task.
+2. `CollectReadCounts` (`GATK_COLLECT_READ_COUNTS`) → RD (binned
+   coverage), over `preprocessed_intervals`. Reproduces
+   `wdl/CollectCoverage.wdl`'s `CollectCounts` task.
+
+#### Neither walker's output can be compressed/indexed in the same container
+
+Both walkers live in the same `gatk4-main_gcnvkernel` container already
+used by `gatk4/svcluster`/`grouped_sv_cluster` — verified directly
+(`gatk CollectSVEvidence --help` / `gatk CollectReadCounts --help`) rather
+than assumed, avoiding a pull of GATK-SV's own separate `gatk_docker`
+image just for these two walkers. But that container has neither `bgzip`
+nor `tabix` (verified directly: `which bgzip tabix` found nothing, only
+`sed`) — unlike GATK-SV's own WDL tasks, which call `tabix`/`bgzip`
+inline in the same command block as the `gatk` invocation, assuming a
+richer image. A Nextflow process has exactly one container, so this had
+to become three small modules, not one:
+
+- `CollectSVEvidence`'s PE/SR/SD output needs only *indexing* — GATK's
+  walker writes it already bgzipped via htsjdk's own feature-file writer
+  (the same mechanism GATK's VCF writers use for `.vcf.gz`), confirmed by
+  `wdl/CollectSVEvidence.wdl` itself calling `tabix` directly on the
+  walker's raw output with no separate `bgzip` step first. New module
+  `modules/local/tabix_sv_evidence` (`TABIX_SV_EVIDENCE`) — a `tabix -f
+  -0 -s1 -b2 -e2` call, using the same `bcftools_htslib` container as
+  `modules/local/tabix`. Not folded into that existing module: PE/SR/SD
+  files aren't VCFs, so they need those explicit format flags — plain
+  `tabix <file>` (auto-detect, `modules/local/tabix`'s one real use case)
+  doesn't apply.
+- `CollectReadCounts`'s RD output (`--format TSV`) is genuinely plain
+  text, needing an actual `bgzip` call GATK-SV's own WDL makes explicitly
+  after a `sed` rewrite (of the `@RG` header's `SM:` tag, to `ped_id` —
+  see [Sample and family ID
+  constraints](#sample-and-family-id-constraints) for why `ped_id`, not
+  `sample_id`, is used for every PED-keyed value in this pipeline). New
+  module `modules/local/bgzip` (`BGZIP`) for the compression step; `sed`
+  itself is present in the GATK container so that part stays inline.
+
+`modules/local/gatk4/collect_sv_evidence`'s own top-of-file note has the
+same reasoning, closer to the code.
+
+#### `sd_locs_vcf` is the one static resource that isn't bgzip/`.tbi`
+
+GATK-SV's `sd_locs_vcf` resource
+(`Homo_sapiens_assembly38.dbsnp138.vcf`) is a plain, uncompressed VCF
+with a GATK-style `.idx` sibling index — every other VCF this pipeline
+handles is bgzipped with a `.tbi`. `CollectSVEvidence`'s
+`-F`/`--site-depth-locs-vcf` flag takes only the VCF path (confirmed via
+`--help`; no separate index flag), so `sd_locs_vcf_idx` is threaded
+through as a plain sibling `path` input for GATK's own index
+auto-discovery to find, not passed on the command line itself.
+
 ### Not yet started
 
 Scramble (needs coverage counts + Manta's VCF as additional inputs, not
 just the BAM — more involved than Wham), cn.MOPS (needs a local module, no
-nf-core equivalent), the gCNV chain, `MergeBatchSites` (GATK-SV's
+nf-core equivalent), the gCNV chain, evidence *merging* (panel-wide
+PE/SR/RD matrices from `bam_collect_evidence`'s per-sample output — GATK-SV's
+`BatchEvidenceMerging`), cutoff derivation (GATK-SV's `FilterBatch` random
+forest — a strong simplify-first candidate, see [Where to
+simplify](#where-to-simplify-relative-to-upstream-gatk-sv)), genotyping
+itself (`TrainSVGenotyping`/`GenotypeSVs`), `MergeBatchSites` (GATK-SV's
 own site-list-only shortcut for cohorts that skip GATK-gCNV — not
-implemented; `CombineBatches`, above, is), `SVAnnotate`, genotyping, panel
-bundle I/O, and the full `build_panel.nf` / `genotype_new_sample.nf`
-compositions.
+implemented; `CombineBatches`, above, is), `SVAnnotate`, panel bundle I/O,
+and the full `build_panel.nf` / `genotype_new_sample.nf` compositions.
