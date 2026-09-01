@@ -1197,6 +1197,39 @@ handles is bgzipped with a `.tbi`. `CollectSVEvidence`'s
 through as a plain sibling `path` input for GATK's own index
 auto-discovery to find, not passed on the command line itself.
 
+#### `CollectReadCounts` OOM'd — our 3GB default was a mis-transcription of GATK-SV's own task
+
+A real HPC run of `collect_evidence.nf` (~50x WGS BAM) had
+`GATK_COLLECT_READ_COUNTS` complete a full 91-minute whole-genome
+traversal (729M reads processed) and then hit `java.lang.OutOfMemoryError:
+Java heap space` in `CollectReadCounts.onTraversalSuccess` — building the
+final binned-count list in memory before writing output, a real cost
+proportional to genome-wide interval count, not per-chunk. The module was
+falling back to its own hardcoded 3GB default (no `task.memory` set for
+`process_single`, same fallback-logging pattern as `GATK4_SVCLUSTER`/
+`GroupedSVCluster`).
+
+That 3GB came from misreading `wdl/CollectCoverage.wdl`'s `CollectCounts`
+task: its `RuntimeAttr default_attr` sets `mem_gb: 3.0`, which looks like
+the task's real default — but that field is never actually consulted for
+the JVM heap size. The task's `command <<<...>>>` block computes
+`machine_mem_gb` from a *separate* top-level `mem_gb` input with its own
+independent fallback: `Float machine_mem_gb = select_first([mem_gb,
+12.0])`. GATK-SV's real effective default is **12GB**, 4x what we'd
+copied. Fixed in `conf/modules.config` with a `withName:
+'GATK_COLLECT_READ_COUNTS'` override, `memory = 12.GB` — matching
+GATK-SV's own validated value directly, unlike `WHAMG`'s fixed 32GB
+override above (picked from one observed failure point, no equivalent
+upstream number to match). `CollectSVEvidence`'s own `RuntimeAttr` doesn't
+have this trap — its `mem_gb: 3.75` *is* what its memory calculation
+actually resolves to, no hidden second input shadowing it — so it was
+left untouched; only `CollectReadCounts` had this bug. **Lesson for
+reading any GATK-SV WDL task's `RuntimeAttr default_attr` block**: check
+that `mem_gb` (or whichever field) is actually threaded into the memory
+calculation used by `runtime { memory: ... }`, not shadowed by a
+same-named-but-different top-level input with its own default — a
+`RuntimeAttr` object existing in the task doesn't guarantee it's live.
+
 ### Not yet started
 
 Scramble (needs coverage counts + Manta's VCF as additional inputs, not
