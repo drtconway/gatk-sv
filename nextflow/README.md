@@ -1230,16 +1230,107 @@ calculation used by `runtime { memory: ... }`, not shadowed by a
 same-named-but-different top-level input with its own default — a
 `RuntimeAttr` object existing in the task doesn't guarantee it's live.
 
+### Panel-wide evidence merging (`vcfs_merge_evidence`, `vcfs_merge_read_counts`)
+
+Two subworkflows, composed by the standalone entry point
+`workflows/merge_evidence.nf`, merge every sample's per-sample evidence
+(from `bam_collect_evidence`) into one panel-wide matrix each — the last
+unbuilt prerequisite for genotyping (`TrainSVGenotyping`/`GenotypeSVs`,
+still not implemented — see [Not yet started](#not-yet-started)), which
+needs `--rd-file`/`--discordant-pairs-file`/`--split-reads-file` inputs at
+exactly this panel-wide shape.
+
+Split into two subworkflows, not one, because they're genuinely different
+in kind:
+
+- `vcfs_merge_evidence` merges PE, SR, and BAF, mirroring GATK-SV's
+  `BatchEvidenceMerging` workflow (`wdl/BatchEvidenceMerging.wdl`). Two
+  GATK walkers: `PrintSVEvidence` (`GATK_PRINT_SV_EVIDENCE`, aliased
+  twice — once for PE, once for SR) merges same-type files across every
+  sample into one file; `SiteDepthtoBAF` (`GATK_SITE_DEPTH_TO_BAF`)
+  converts+merges every sample's SD file into one BAF file in the same
+  step, using `sd_locs_vcf`. GATK-SV's `BatchEvidenceMerging` accepts
+  *either* pre-existing BAF files or SD files (via `SDtoBAF`) — only the
+  SD path is implemented, since `bam_collect_evidence` only ever produces
+  SD, never raw BAF.
+- `vcfs_merge_read_counts` merges RD (binned coverage), mirroring
+  GATK-SV's `MakeBincovMatrix` workflow (`wdl/MakeBincovMatrix.wdl`).
+  Plain shell (`awk`/`paste`/`bgzip`), not a GATK walker — three new local
+  modules (`BINCOV_SET_BINS`, `BINCOV_MAKE_COLUMNS`, `BINCOV_ZPASTE`),
+  same "small chained shell modules, `bcftools_htslib` container" pattern
+  as `TABIX`/`BGZIP`/`EXCLUDE_VARIANTS_BY_ID` elsewhere in this pipeline.
+  Genuinely different shape from every other subworkflow so far: one
+  sample's counts are picked as the reference bin grid
+  (`BINCOV_SET_BINS`, via `.first()` on the collected channel), *then*
+  every sample (including the reference one) is reshaped against that
+  grid and pasted together column-wise — a "pick one, then fan out"
+  structure none of this pipeline's other merge steps have needed.
+
+Deliberately simpler than the WDL in one respect, for both subworkflows:
+GATK-SV's `MergeEvidence`/`SDtoBAF` tasks have an optional
+`rename_samples` step (rewriting each file's sample column to the batch's
+canonical sample list) because their per-sample evidence files are keyed
+by whatever `sample_id` was passed to `GatherSampleEvidence`, which may
+not match the batch's own naming. This pipeline doesn't have that
+mismatch to correct: `bam_collect_evidence`'s `GATK_COLLECT_SV_EVIDENCE`
+already writes every PE/SR/SD file with `--sample-name` set to
+`meta.ped_id` at collection time — the same PED-keyed identity every
+other lookup in this pipeline already uses — so there's nothing left to
+rename by the time evidence reaches the merge step. A real, if quiet,
+payoff from the `ped_id` design decision made much earlier in this
+project (see [Sample and family ID
+constraints](#sample-and-family-id-constraints)).
+
+#### `env` process outputs need a quoted string, not a bare identifier
+
+`BINCOV_SET_BINS` needed to emit a shell variable (`BINSIZE`, computed at
+runtime from the data) as a process output, for
+`BINCOV_MAKE_COLUMNS`/`BINCOV_ZPASTE` downstream to consume as a `val`.
+The first attempt, `env BINSIZE, emit: binsize` (bare identifier, by
+analogy with `path`/`val`'s own syntax), failed at *script compilation*
+with `` `BINSIZE` is not defined `` — not a runtime error, so
+`-stub-run` caught it immediately, before any real execution. The correct
+syntax is `env 'BINSIZE', emit: binsize` (a quoted string) — confirmed
+empirically with an isolated test process, since this distinction isn't
+obvious from output-block syntax that otherwise looks uniform
+(`path("...")`, `val(...)`, `env(...)` would all parse, but only the
+quoted-string form actually works). Also needs a real `export` in the
+`script:`/`stub:` body (`export BINSIZE=...`, not a bare `BINSIZE=...`
+shell assignment) for Nextflow's output capture to see it at all.
+
+#### `.combine()` flattens list-valued channel items instead of nesting them
+
+`vcfs_merge_read_counts` needed to pair one collected list (every
+sample's bincov column, `List<Path>`) with one single value (the shared
+bin-locations file) into a single process call's input tuple. The
+straightforward `columns_channel.combine(bin_locs_channel)` produced a
+flat list — `[colA, colB, locsfile]` — not the nested `[[colA, colB],
+locsfile]` a `.map { cols, locs -> ... }` destructuring assumed, causing
+`Invalid method invocation call with arguments: [...] (java.util.LinkedList)
+on _closure_ type`. Confirmed via an isolated test
+(`channel.of([1,2,3]).combine(channel.of('x'))` emits `[1,2,3,'x']`, not
+`[[1,2,3],'x']`) — `.combine()` flattens *any* list-valued item against
+whatever it's paired with, rather than treating a list as one atomic
+tuple element. Fixed by wrapping the list in an extra list first
+(`.map { cols -> [ cols ] }`) before combining, which keeps it
+distinguishable from the scalar side afterward. **Lesson for pairing a
+collected list with a single broadcast value via `.combine()`**: verify
+the actual emitted shape (e.g. with a throwaway `.view()`) rather than
+assuming standard list/tuple semantics — this behavior isn't obvious from
+the operator's name and wasn't caught by `-stub-run`'s wiring check until
+the actual channel shapes met at runtime (a compile-time-clean, then
+runtime `Invalid method invocation` error, one step later than the `env`
+syntax issue above).
+
 ### Not yet started
 
 Scramble (needs coverage counts + Manta's VCF as additional inputs, not
 just the BAM — more involved than Wham), cn.MOPS (needs a local module, no
-nf-core equivalent), the gCNV chain, evidence *merging* (panel-wide
-PE/SR/RD matrices from `bam_collect_evidence`'s per-sample output — GATK-SV's
-`BatchEvidenceMerging`), cutoff derivation (GATK-SV's `FilterBatch` random
-forest — a strong simplify-first candidate, see [Where to
-simplify](#where-to-simplify-relative-to-upstream-gatk-sv)), genotyping
-itself (`TrainSVGenotyping`/`GenotypeSVs`), `MergeBatchSites` (GATK-SV's
-own site-list-only shortcut for cohorts that skip GATK-gCNV — not
-implemented; `CombineBatches`, above, is), `SVAnnotate`, panel bundle I/O,
-and the full `build_panel.nf` / `genotype_new_sample.nf` compositions.
+nf-core equivalent), the gCNV chain, cutoff derivation (GATK-SV's
+`FilterBatch` random forest — a strong simplify-first candidate, see
+[Where to simplify](#where-to-simplify-relative-to-upstream-gatk-sv)),
+genotyping itself (`TrainSVGenotyping`/`GenotypeSVs`), `MergeBatchSites`
+(GATK-SV's own site-list-only shortcut for cohorts that skip GATK-gCNV —
+not implemented; `CombineBatches`, above, is), `SVAnnotate`, panel bundle
+I/O, and the full `build_panel.nf` / `genotype_new_sample.nf`
+compositions.
