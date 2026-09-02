@@ -1322,6 +1322,49 @@ the actual channel shapes met at runtime (a compile-time-clean, then
 runtime `Invalid method invocation` error, one step later than the `env`
 syntax issue above).
 
+#### `zcat | head -c 1` under global `pipefail` SIGPIPEs `zcat` — a real HPC failure
+
+A real HPC run of `merge_evidence.nf` failed with `BINCOV_SET_BINS`
+exiting 141 (SIGPIPE, 128+13) on `zcat -f ... | sed ... | ... > tmp_locs`
+— the whole pipeline, not any one command's own logic, and with empty
+`Command output`. Root cause: an *earlier* line in the same script,
+`firstchar=$(zcat -f ${count_file} | head -c 1)`, used `head -c 1` to
+read just the first byte — a completely standard "peek at the start of a
+stream" idiom. `head -c 1` exits as soon as it has its one byte, closing
+its end of the pipe while `zcat` may still be writing; `zcat` then gets
+`SIGPIPE`. Under a normal (non-strict) shell this is silent and harmless
+— it's what `head` is *for*. But this pipeline's global `pipefail`
+(`nextflow.config`, deliberately set — see "The OOM above should have
+failed the task outright, and didn't" earlier, in the harmonisation
+stage 1 section) means a command substitution or pipeline containing that SIGPIPE
+reports exit 141 as *its own* result — and because this was inside a
+`firstchar=$(...)` assignment under `set -e` (part of the same global
+`pipefail` line), that 141 killed the whole script, not just the
+substitution. The exact same pattern (`sed -n 'Np'`, `head`, anything
+that deliberately stops reading early) anywhere downstream of a live pipe
+has the identical risk — confirmed a second, not-yet-exercised instance
+of the same bug in `BINCOV_MAKE_COLUMNS` (same `zcat | head -c 1` line)
+while fixing the first.
+
+Fixed in both modules by decompressing to a plain file first (`zcat -f
+${count_file} > tmp_raw`), then reading from that file with `head`/`sed`
+afterward — a `head`/`sed -n` reading from a *file*, not a pipe, has no
+upstream process left to `SIGPIPE` when it stops early. Verified for real
+(not just `-stub-run`, which never exercises `script:` and so never had
+a chance to catch this): a standalone test workflow running
+`BINCOV_SET_BINS` and `BINCOV_MAKE_COLUMNS` against a synthetic
+5000-line, multi-KB gzipped counts file, under the same `-ueo pipefail`
+shell setting as production, both completed successfully with correct
+output. **Lesson for writing shell inside a `script:` block on this
+pipeline specifically**: any `head -n`/`head -c`/`sed -n 'Np'`/similar
+early-terminating command must read from a file, not sit downstream of a
+still-live pipe — global `pipefail` makes an otherwise-idiomatic and
+harmless pattern into a real, silent-until-you-hit-it failure mode. When
+porting shell from a GATK-SV WDL task (most of which run under plain
+`set -euo pipefail` too, so this risk already existed there in theory,
+just apparently never triggered), check every pipe for an early-exiting
+stage, not just the ones that look unusual.
+
 ### Not yet started
 
 Scramble (needs coverage counts + Manta's VCF as additional inputs, not

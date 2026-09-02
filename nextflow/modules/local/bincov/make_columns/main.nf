@@ -28,7 +28,16 @@ process BINCOV_MAKE_COLUMNS {
     script:
     def prefix = task.ext.prefix ?: "${meta.id}"
     """
-    firstchar=\$(zcat -f ${count_file} | head -c 1)
+    # Decompress to a plain file first, not piped straight into `head` --
+    # see modules/local/bincov/set_bins's own note: under this pipeline's
+    # global pipefail, `head -c 1` early-exiting downstream of a live
+    # `zcat` pipe turns zcat's resulting SIGPIPE into the whole pipeline's
+    # exit status (a real HPC failure, exit 141, caught in the sibling
+    # module first). Reading from a plain file has no upstream pipe
+    # process left to SIGPIPE.
+    zcat -f ${count_file} > tmp_raw
+
+    firstchar=\$(head -c 1 tmp_raw)
     if [ "\$firstchar" == '@' ]; then
         shift=1
     else
@@ -36,8 +45,7 @@ process BINCOV_MAKE_COLUMNS {
     fi
 
     printf '#Chr\\tStart\\tEnd\\t%s\\n' "${meta.ped_id}" > tmp.bed
-    zcat -f ${count_file} \\
-        | sed '/^@/d' \\
+    sed '/^@/d' tmp_raw \\
         | sed '/^CONTIG\tSTART\tEND\tCOUNT\$/d' \\
         | sed '/^#/d' \\
         | awk -v x="\${shift}" -v b="${binsize}" 'BEGIN{OFS="\\t"}{\$2=\$2-x; if (\$3-\$2==b) print \$0}' \\
