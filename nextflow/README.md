@@ -1365,15 +1365,378 @@ porting shell from a GATK-SV WDL task (most of which run under plain
 just apparently never triggered), check every pipe for an early-exiting
 stage, not just the ones that look unusual.
 
+### Path to genotyping: the real prerequisite chain
+
+`merge_evidence.nf` validated cleanly on a real HPC run (both `-profile
+docker` locally and a real-data HPC run), closing out panel-wide evidence
+merging. The obvious next step is genotyping
+(`TrainSVGenotyping`/`GenotypeSVs`, GATK walkers in `GenotypeBatch.wdl`),
+which consumes the merged PE/SR/BAF/RD evidence directly. But tracing
+`GenotypeBatch.wdl`'s own inputs back through GATK-SV's WDL shows a longer
+dependency chain than that framing suggests — `rf_cutoffs` (the random
+forest genotyping cutoffs `TrainSVGenotyping` needs) is not a static
+resource, it's computed per-cohort by `FilterBatchSites`/`AdjudicateSV`
+(`svtk adjudicate`), which itself consumes `evidence_metrics` — a whole
+separate metrics-aggregation subworkflow, `GenerateBatchMetrics`, not yet
+built here. Decided to port this faithfully rather than stub or simplify
+`rf_cutoffs` early, so the real build order is three pieces in sequence,
+not one:
+
+1. **`GenerateBatchMetrics`** (done — see task breakdown below):
+   per-variant evidence metrics from the sites VCF + merged PE/SR/BAF/RD,
+   producing the flat `evidence_metrics.tsv` that `AdjudicateSV` needs.
+2. **`FilterBatchSites`/`AdjudicateSV`** (done — see its own section
+   below): runs `svtk adjudicate` against those metrics to emit
+   `rf_cutoffs` (and `scores`). Originally scoped to just `AdjudicateSV`
+   itself (`FilterAnnotateVcf`/`PlotSVCountsPerSample` seemed unnecessary
+   for genotyping) — reversed once `GenotypeBatch.wdl`'s real `vcf` input
+   was traced through `wdl/GATKSVPipelineBatch.wdl`'s own wiring and
+   turned out to be `FilterAnnotateVcf`'s own sites-filtered output
+   (merged across callers), not `GenerateBatchMetrics`'/`CombineBatches`'
+   raw sites VCF — so `FilterAnnotateVcf` ended up built after all (see
+   its own section below). `PlotSVCountsPerSample` (outlier-sample QC
+   plotting) remains out of scope — genuinely not needed by anything
+   downstream.
+3. **`GenotypeBatch`** (`TrainSVGenotyping`/`GenotypeSVs`): the genotyping
+   step itself, now unblocked. **Done** — see its own section below.
+
+#### `GenerateBatchMetrics` task breakdown
+
+Traced from `wdl/GenerateBatchMetrics.wdl`. Chain: concat all-caller VCFs
+→ scatter into shards → per shard (`FormatVcf` svtk→GATK conversion →
+`SVRegionOverlap` segdup/repeat-mask annotation → `AggregateSVEvidence`
+PE/SR/BAF-based metrics → `AggregateDepthEvidence` RD-based metrics) →
+concat shards back → `AggregateTests` (`aggregate.py`) produces the final
+`evidence_metrics.tsv`.
+
+| Step | Status |
+| --- | --- |
+| `CreatePloidyTableFromPed` | existing (`ploidy_table_from_ped`) — reuse |
+| `ConcatVcfs` (input + output) | **done** — `CONCAT_VCFS` module (`bcftools concat`), aliased as `CONCAT_INPUT_VCFS`/`CONCAT_OUTPUT_VCFS` with per-alias `ext.args` (`--allow-overlaps`/`--naive`, `conf/modules.config`) — this did NOT already exist anywhere in this pipeline despite an earlier (wrong) note here saying "reuse"; genuinely new. Validated for real: a 2-shard round-trip (scatter then concat) reproduced the original 2-record VCF exactly, byte-for-byte record content |
+| `FormatVcf` (svtk→GATK) | existing (`FORMAT_SVTK_VCF_FOR_GATK`) — reuse per-shard |
+| `median_coverage` | **done** — `MEDIAN_COVERAGE` module, ports `MedianCov.wdl`'s `WGD/bin/medianCoverage.R` (vendored verbatim as `bin/medianCoverage.R`); needed here (by `AggregateSVEvidence`/`AggregateDepthEvidence`), one layer earlier than genotyping itself needs it. Validated for real (not just `-stub-run`): a synthetic bincov matrix through a standalone test workflow, output checked by hand against the expected transpose |
+| `ScatterVcf` | **done** — `SCATTER_VCF` module, wraps `bcftools +scatter`. Validated for real: a 2-record VCF split at `-n 1` (2 shards, records not duplicated/dropped, checked by hand) and consolidated at `-n 10` (1 shard); also validated the WDL's own empty-VCF placeholder-shard fallback against a genuinely empty (0-record) VCF, confirming `bcftools +scatter` itself produces zero output files in that case (checked empirically, not assumed from the WDL's comment) |
+| `SVRegionOverlap` | **done** — `GATK_SVREGIONOVERLAP` module; static resources `segdups`/`rmsk` already in `resources_hg38.json`, wired as two fixed named tracks (not a general list — this pipeline only ever has these two). Validated for real against a synthetic VCF + synthetic segdup/rmsk BED tracks; output overlap fractions/endpoint counts checked by hand |
+| `AggregateSVEvidence` | **done** — `GATK_AGGREGATESVEVIDENCE` module; consumes merged PE/SR/BAF + `median_coverage`. Validated for real end-to-end, including genuinely-collected (not hand-faked) PE/SR/BAF evidence from a real synthetic BAM run through actual `CollectSVEvidence`/`SiteDepthtoBAF` |
+| `AggregateDepthEvidence` | **done** — `GATK_AGGREGATEDEPTHEVIDENCE` module; consumes merged RD + `median_coverage`. Validated for real |
+| `aggregate.py` → `AggregateTests` | **done** — `AGGREGATE_TESTS` module, vendors `src/sv-pipeline/02_evidence_assessment/02e_metric_aggregation/scripts/aggregate.py` into `bin/aggregate.py` (adapted, not verbatim — see `bin/README.md`'s own note: inlines the one `svtk.utils` function it needed, `get_called_samples`, to avoid a `pybedtools`/`bedtools` container dependency for code the script never otherwise calls). Validated for real against a synthetic annotated VCF, output metrics checked by hand (vf, rmsk, RDQ, poor_region_cov all correct) |
+| `vcfs_generate_batch_metrics` subworkflow + `workflows/generate_batch_metrics.nf` | **done** — composes all of the above (plus `bam_call_manta`/`bam_call_wham`/`vcfs_cluster_svcluster` for stage-1 per-caller clustering and `bam_collect_evidence`/`vcfs_merge_evidence`/`vcfs_merge_read_counts`/`median_coverage` for panel-wide evidence, same "one entry point runs the full chain" pattern as `combine_batches.nf`/`merge_evidence.nf`). **Deliberately does not run `vcfs_combine_batches`**: confirmed against `wdl/GATKSVPipelinePhase1.wdl`'s own wiring that `GenerateBatchMetrics` takes each caller's stage-1 clustered VCF directly (`ClusterBatch.clustered_*_vcf`), not `CombineBatches`' later cross-caller merged output — an easy wrong assumption from the workflow's name alone, checked against the WDL's actual call site rather than guessed. Validated for real end-to-end (real per-shard evidence annotation, not just wiring) and via full-sample-sheet `-stub-run` (78 processes, `BAM_CALL_MANTA` through `AGGREGATE_TESTS`) |
+
+Built `median_coverage` and vendored `aggregate.py` first since they were
+the two independent, no-interdependency pieces — no wiring to any other
+new module required to validate either in isolation. Both containers are
+new (`dockerfiles/median-coverage`: `r-base` + CRAN `optparse`;
+`dockerfiles/aggregate-tests`: `python:3.12-slim` + `pysam`/`numpy`/
+`pandas`), built and validated locally, and now pushed to Docker Hub
+(`drtomc/gatk-sv-nf-median-coverage:0.1.0`,
+`drtomc/gatk-sv-nf-aggregate-tests:0.1.0`) — available on HPC/any other
+machine, not just this one's local Docker daemon.
+
+#### A significant finding: five GATK-SV walkers only exist in GATK-SV's own GATK fork, not bioconda
+
+Before writing `SVRegionOverlap`/`AggregateSVEvidence`/`AggregateDepthEvidence`,
+tried the obvious thing: reuse `gatk4-main_gcnvkernel`, the same container
+already used by `GATK4_SVCLUSTER`/`GATK_PRINT_SV_EVIDENCE`/every other
+`gatk4/*` module here. `gatk --list` on that image has no
+`SVRegionOverlap`/`AggregateSVEvidence`/`AggregateDepthEvidence` at all —
+confirmed directly, not assumed. Pulling GATK-SV's own `gatk_docker`
+(`inputs/values/dockers.json`: `us.gcr.io/broad-dsde-methods/gatk-sv/gatk:mw-gatk-sv-53d5c2d`)
+and running `gatk --list` there shows all three, plus (relevant later)
+`TrainSVGenotyping`/`GenotypeSVs`. The two images are genuinely different
+GATK builds — `gatk4-main_gcnvkernel` is bioconda's `gatk4-main=4.7.0.0`;
+GATK-SV's own image is a patched fork, `4.6.2.0-92-g6379d28-SNAPSHOT` —
+not just a version difference but a different codebase, since these five
+walkers are exclusive to GATK-SV's fork and aren't in stock/bioconda GATK
+at all.
+
+Decided to point these three new modules' `container` directly at
+GATK-SV's own GCR image, same as upstream WDL's `gatk_docker`, rather
+than trying to get a smaller substitute built. This breaks from every
+other `gatk4/*` module's small/Wave-hosted-image pattern (a genuine
+inconsistency, not an oversight) — accepted because the alternative
+(waiting on/building a from-source container for GATK-SV's own fork) is
+much more work for uncertain payoff. **This same constraint will apply to
+`TrainSVGenotyping`/`GenotypeSVs`** (`GenotypeBatch`, still queued after
+this) — plan for the same container choice there, don't re-discover this.
+
+The `container` line itself is a plain image reference (not `docker://`,
+not engine-conditional) — same reasoning as
+`modules/local/ploidy_table_from_ped`'s own note: Apptainer/Singularity
+accept a bare `registry/path:tag` reference (defaulting to
+Docker-Hub-style pulling for any unscoped reference, not just Docker Hub
+itself), and plain `docker` requires the bare form anyway, so one
+reference works for both engines.
+
+No `environment.yml` added for these three modules, unlike every other
+`gatk4/*` module here — those exist for nf-core-template-convention
+reasons but are dead weight in practice (no `conda` profile is configured
+anywhere in `nextflow.config`/`conf/`), and adding one here specifically
+would be actively misleading: there is no bioconda package that provides
+these walkers to pin a version against.
+
+All three modules validated for real, not just wiring: a synthetic BAM
+(hand-built via `samtools`/a literal SAM file, since `tests/data/`'s own
+`SAMPLE_A.bam` is a 0-byte `-stub-run`-only placeholder, not a real BAM —
+confirmed by trying to actually run `merge_evidence.nf` non-stub against
+it, which failed for exactly that reason) run through the real
+`CollectSVEvidence`/`SiteDepthtoBAF` walkers to get genuinely-shaped
+PE/SR/SD/BAF evidence, rather than hand-faking the tabix-indexed evidence
+file schemas and risking a false-confidence test. One invocation mistake
+caught and fixed this way: `CollectSVEvidence`'s `-F`/site-depth-locs flag
+was initially guessed from `--help`'s wording
+(`--site-depth-locs-vcf`, which doesn't exist) instead of checked against
+`wdl/CollectSVEvidence.wdl`'s own actual invocation (`-F`) — corrected
+before it went in any module, but a reminder to verify a real invocation
+against the WDL's own command line, not `--help` text, when in doubt.
+
+Next: the `vcfs_generate_batch_metrics` subworkflow and
+`workflows/generate_batch_metrics.nf` entry point, wiring everything
+above together -- the last piece of `GenerateBatchMetrics`.
+
+#### Wiring `vcfs_generate_batch_metrics`: three real bugs, all caught by real (non-stub) validation
+
+`GenerateBatchMetrics` is now fully built: `vcfs_generate_batch_metrics`
+composes every module above, `workflows/generate_batch_metrics.nf` composes
+that with `bam_call_manta`/`bam_call_wham`/`vcfs_cluster_svcluster` (stage
+1) and `bam_collect_evidence`/`vcfs_merge_evidence`/
+`vcfs_merge_read_counts`/`median_coverage` (panel-wide evidence) -- same
+"one entry point runs the full chain" pattern as `combine_batches.nf`/
+`merge_evidence.nf`. Validated for real end-to-end (a genuine 2-record
+VCF through the whole chain to `evidence_metrics.tsv`, output checked by
+hand) and via a full-sample-sheet `-stub-run` (78 processes). None of the
+three bugs below were visible from writing the subworkflow code alone --
+each one only appeared once real data was pushed all the way through:
+
+- **`GATK_AGGREGATESVEVIDENCE`'s `-V`/`-O` resolved to the same file.**
+  Every per-shard stage
+  (`GATK_SVREGIONOVERLAP`/`GATK_AGGREGATESVEVIDENCE`/
+  `GATK_AGGREGATEDEPTHEVIDENCE`) derives its own output filename from
+  `meta.id`, but the shard's `meta.id` was carried unchanged through the
+  whole chain -- so `AggregateSVEvidence` read and overwrote its own input
+  file in place, silently succeeding with **0 variants processed** rather
+  than erroring (empty output looks like valid output at a glance). Same
+  root cause `vcfs_combine_batches` already documents for its own
+  multi-stage `GATK4_SVCLUSTER`/`GATK4_GROUPEDSVCLUSTER` chain -- reading
+  that note first didn't prevent writing the same bug again here, since
+  the actual renaming step was missed, not misunderstood. Fixed by giving
+  each stage its own `meta.id` suffix (`.svregionoverlap`,
+  `.aggregatesvevidence`).
+- **`CONCAT_OUTPUT_VCFS` failed on real shard output: "Unsorted positions
+  ... 400 followed by 100."** WDL/Cromwell's `scatter` always preserves
+  index order in its output array; Nextflow's `.collect()` on a scattered
+  channel gathers emissions in whatever order the parallel shard
+  processes actually finish, not shard order. Fixed by sorting
+  shards by filename before the final `--naive` concat (safe here since
+  `SCATTER_VCF`'s own shard names are zero-padded and lexically sortable)
+  -- the WDL's own `ConcatVcfs` task offers exactly this as its
+  `sort_vcf_list` option, unused at this particular WDL call site since
+  Cromwell doesn't need it there.
+- **The sort fix's first attempt silently did nothing.** Sorted on
+  `it[0].toString()` (the shard's full absolute path, e.g.
+  `.../work/c0/c41846.../shard_000000.vcf.gz`) instead of `it[0].name`
+  (just the filename) -- this sorts by the **work-directory hash
+  prefix**, which is random per run, not by the shard number the sort was
+  actually meant to fix. Confirmed by testing the sort in isolation before
+  concluding it was correct, then re-testing against the real subworkflow
+  and finding the output order genuinely unchanged -- the isolated test
+  used files with meaningful literal paths (`/tmp/a...`, `/tmp/z...`), so
+  it passed while hiding the exact real-path failure mode.
+
+### `FilterBatchSites`/`AdjudicateSV`: random-forest cutoff derivation
+
+`ADJUDICATE_SV` module, wrapping GATK-SV's `svtk adjudicate` (vendored,
+adapted — see `bin/README.md`'s own note: calls the vendored
+`svtk.adjudicate` logic directly rather than installing `svtk` itself, to
+avoid a `pybedtools`/`bedtools`/Cython container dependency for logic that
+doesn't need it). Takes `GenerateBatchMetrics`'s `evidence_metrics.tsv`,
+emits `scores`/`cutoffs`/`RF_intermediate_files.tar.gz` — `cutoffs` is
+`rf_cutoffs`, the direct input `TrainSVGenotyping` needs.
+`PlotSVCountsPerSample` (outlier-sample QC plotting) remains out of scope
+— see [Path to genotyping](#path-to-genotyping-the-real-prerequisite-chain)
+above. `FilterAnnotateVcf`, this WDL's third task, is built separately
+below (its own section) once `GenotypeBatch`'s real `vcf` input turned
+out to need it after all.
+
+Validated for real against a synthetic `evidence_metrics.tsv` and via
+`-stub-run`. Output cutoffs file format double-checked column-by-column
+against `wdl/GenotypeBatch.wdl`'s own consumption
+(`awk -F '\t' '{if ($5=="PEQ") print $2 }'` — column 5 is this file's own
+`metric` column, column 2 is `cutoff`; confirmed by grepping the real
+output, not assumed from column names alone).
+
+#### Getting realistic synthetic training data took several iterations — a real lesson about this specific random forest, not a code bug
+
+Building a `evidence_metrics.tsv` fixture large enough to exercise the
+random forest hit a genuine dead end worth recording: a naive synthetic
+dataset with two cleanly-separated "strong signal" / "weak signal"
+clusters (no overlap between them) reliably made `adjudicate_PESR` (the
+7th and last of `adjudicate_SV`'s internal passes) fail with "No Fail
+variants included in training set" — even though the earlier six passes
+(`BAF1`, `SR1`, `RD`, `PE`) all succeeded on the exact same two-cluster
+shape. Traced (not guessed) to `random_forest.py`'s `learn_cutoffs()`:
+for `name in ("PE_prob", ...)` it takes `min(learn_cutoff_dist(...),
+learn_cutoff_fdr(...))`, and `learn_cutoff_fdr`'s 5%-false-positive-rate
+ROC threshold degenerates to a value extremely close to zero when the
+training data has literally zero distributional overlap between Pass and
+Fail — meaning even a "weak" synthetic row nearly always exceeds the
+learned cutoff and gets marked as passing, regardless of how small its
+raw feature value is. Confirmed directly: calling `RandomForest.run()` by
+hand on the same two-cluster data gave the textbook-correct answer (weak
+rows correctly failed); only `adjudicate_PE`'s own `name == "PE_prob"`
+branch (invoking the FDR path) produced the wrong-looking cutoff. This
+is not a bug in the vendored code — real GATK-SV metrics have continuous,
+naturally-overlapping distributions this FDR logic is built for; a
+synthetic fixture needs the same property (each row's metrics as noisy
+functions of one continuous "true positive-ness" signal, not two discrete
+clusters) to exercise this classifier meaningfully. **Lesson for any
+future synthetic test data for this module**: don't hand-pick two
+non-overlapping value ranges for "should pass" vs "should fail" — sample
+every metric as continuous noise around a single underlying quality
+signal instead, or the FDR-based cutoff logic specifically won't behave
+like it would on real data.
+
+### `FilterAnnotateVcf`: RF-score sites filtering
+
+`FILTER_ANNOTATE_VCF` module + `filter_batch_sites` subworkflow. Built
+after `AdjudicateSV`, once tracing `GenotypeBatch.wdl`'s real `vcf` input
+through `wdl/GATKSVPipelineBatch.wdl`'s own wiring showed it's
+`FilterAnnotateVcf`'s own sites-filtered output (merged across callers via
+`MergePesrDepthVcfs`, `allow_overlaps=true`), not `GenerateBatchMetrics`'
+raw sites VCF and not `CombineBatches`' output either — an easy wrong
+assumption to make from the workflow names alone, the same kind of
+WDL-call-site-not-workflow-name check that mattered for
+`vcfs_generate_batch_metrics` earlier.
+
+Reproduces `FilterBatchSites.wdl`'s `FilterAnnotateVcf` task exactly:
+score-based filtering (`score >= 0.5` from `AdjudicateSV`'s `scores`),
+INV/BND/INS-scoring-passers reclassified as `BND`, an inline Python
+`END2`/`CHR2` backfill, then two vendored scripts
+(`rewrite_SR_coords.py`/`annotate_RF_evidence.py`) for SR-based breakpoint
+coordinate correction and per-record evidence-type annotation. `svtype`
+per record. `filter_batch_sites` runs this once per caller (currently
+Manta + Wham, both PESR-type — this pipeline has no depth caller yet, see
+[Not yet started](#not-yet-started)), then merges across callers.
+
+New container (`dockerfiles/filter-annotate-vcf`): needs both
+`bcftools`/`bgzip` (the task's own inline shell pipeline) *and*
+`pysam`/`numpy`/`pandas` (the two vendored scripts) in the same
+container, since a single Nextflow process has exactly one container —
+neither this pipeline's existing `bcftools_htslib` image nor its
+`aggregate-tests` image (has the Python packages, no `bcftools`) covers
+both, so this combines both rather than splitting one WDL task's single
+inline pipeline across two Nextflow processes. Built, validated for real,
+and pushed (`drtomc/gatk-sv-nf-filter-annotate-vcf:0.1.0`).
+
+Validated for real end-to-end against a synthetic sites VCF + real
+`AdjudicateSV` output (`scores`/`cutoffs` from the earlier synthetic
+`evidence_metrics.tsv` run) — confirmed by hand that a `BND`-rescored
+record was correctly reclassified, had `END2`/`CHR2` backfilled, had its
+coordinates rewritten using its own `SR1POS`/`SR2POS` metrics (matching
+the exact 0-based conversion the script performs), and was annotated with
+the right `EVIDENCE` classes matching its own per-evidence-type scores.
+One test-data-only gap found and fixed: the synthetic VCF's header
+initially didn't declare `END2`/`CHR2` INFO fields, which the real
+pipeline's earlier stages already carry — not a module bug.
+
+### `GenotypeBatch`: genotyping itself
+
+`genotype_batch` subworkflow + `workflows/genotype_batch.nf` entry point
+— the actual goal of the whole prerequisite chain. Reproduces
+`wdl/GenotypeBatch.wdl` in full: `TrainSVGenotyping` (once, whole sites
+VCF, using `rf_cutoffs`' `PEQ`/`SRQ` values) → per contig (`PrintSVEvidence`
+×3, subsetting panel-wide RD/PE/SR to that contig, then tabix-indexed →
+`GenotypeSVs`, using the trained RD/PE/SR cutoff tables) → concat contig
+shards back → `SeparateDepthPesr` (split by `INFO/ALGORITHMS`) →
+`GenerateRegenoCoverageMedians` (`RD_MCR` extraction, vendored
+`extract_format_table.py` — for `RegenotypeCNVs`, itself not built here,
+kept only for output parity with upstream).
+
+Five new modules: `GATK_TRAINSVGENOTYPING`, `GATK_GENOTYPESVS`, a new
+`GATK_PRINT_SV_EVIDENCE_CONTIG` (distinct from the existing
+`GATK_PRINT_SV_EVIDENCE`: that one merges *multiple per-sample* files
+with `-F <list-file>`; this one subsets *one already-merged* file to a
+single contig with a bare `--evidence-file`, matching
+`GenotypeSVs`' own per-contig `PrintSVEvidence` calls exactly),
+`SEPARATE_DEPTH_PESR`, `GENERATE_REGENO_COVERAGE_MEDIANS`. Same
+GATK-SV-fork-only container as the three `GenerateBatchMetrics` walker
+modules for `TrainSVGenotyping`/`GenotypeSVs` (confirmed directly, same as
+before: neither exists in `gatk4-main_gcnvkernel`).
+
+#### Two real Nextflow wiring bugs, caught by real (non-stub) validation
+
+- **`.combine()` flattens a wrapped single-tuple value against a
+  multi-element scattered tuple, not just a plain list.** The
+  wrap-collect-unwrap pattern (`.map { x -> [[x]] }.collect().map {
+  it[0] }`) that correctly broadcasts a *pair* (`[file, index]`) across a
+  scatter elsewhere in this pipeline still gets re-flattened by
+  `.combine()` when the scattered side itself already has multiple
+  positional elements — found for real via an actual Groovy closure arity
+  mismatch at runtime (`Invalid method invocation`), not assumed: a
+  2-argument closure (`contig, pair ->`) needed to become a 3-argument one
+  (`contig, f, tbi ->`) once the broadcast value's own `[f, tbi]` pair got
+  flattened into the combined tuple's own positional slots. Same root
+  lesson `vcfs_merge_read_counts` already documents for `.combine()`, but
+  the exact flattening depth depends on both sides' shapes, not just the
+  broadcast side's — verify the actual emitted shape with `.view()` each
+  time, don't assume the earlier fix generalizes unchanged.
+- **`GATK_PRINT_SV_EVIDENCE_CONTIG`'s output codec detection needs a
+  filename prefix, and the caller must give each per-contig,
+  per-evidence-type call a distinct one.** Same "process-name-derived
+  output filename collides with input" pitfall documented earlier for
+  `vcfs_combine_batches`/`vcfs_generate_batch_metrics`, plus a second,
+  narrower gotcha specific to this module: GATK's own evidence-file codec
+  detection requires the output filename to both have a real prefix
+  segment (a bare `rd.txt.gz` fails "no suitable codecs found") and end in
+  `.rd.txt.gz`/`.pe.txt.gz`/`.sr.txt.gz` specifically (case-insensitive).
+  `conf/modules.config` sets `ext.prefix = { "${meta.id}.rd" }` (etc.) for
+  each of the three `GATK_PRINT_SV_EVIDENCE_CONTIG` aliases accordingly.
+
+#### An honest limitation: `TrainSVGenotyping`'s PE/SR evidence pass was never exercised to full completion with real data
+
+`TrainSVGenotyping`'s RD/depth training pass succeeded for real
+("Training on 1 CNV sites", "Training completed") against a genuine
+synthetic VCF + median-coverage + RD evidence file, confirming the
+module's own invocation (every flag, the `PEQ`/`SRQ` extraction from
+`rf_cutoffs`, file staging) is correct. Its PE evidence pass, however,
+consistently failed with `IllegalStateException: No discordant pair
+counts after first pass` (`DiscordantPairEvidenceGenotyper
+.finalizeFirstPass`) against every synthetic PE evidence file tried —
+including a two-sample, four-discordant-pair file, and regardless of
+whether the sites VCF had any PESR-typed (non-depth) variant at all. Not
+traced to a specific root cause (unlike the `AdjudicateSV` FDR-cutoff
+case, which was tracked down and understood) — likely some internal
+minimum this walker wants that a hand-built, few-record synthetic PE file
+doesn't reach, but this was **not confirmed**, and is left as a real,
+open gap rather than papered over. Consequence: `GATK_GENOTYPESVS`'s own
+invocation was validated with real data only up to the point it consumes
+RD/PE/SR cutoff tables (a clean, precisely-located `rd_table.tsv`-format
+error when fed an empty placeholder table) — never with a real,
+successfully-trained table, since `TrainSVGenotyping` itself never fully
+succeeded end-to-end with synthetic data. The full chain (all 116
+processes, `TrainSVGenotyping` through `GenerateRegenoCoverageMedians`)
+**is** confirmed correct via `-stub-run`, and every module's own
+real-data invocation up to this specific evidence-volume wall is
+independently confirmed correct — but a real, successful, non-stub
+`TrainSVGenotyping`+`GenotypeSVs` pass together, with genuine PE/SR
+evidence, remains unverified. **Test this for real against actual HPC
+data** before trusting this path blindly, same caution this README
+already gives every other real-vs-stub gap.
+
 ### Not yet started
 
 Scramble (needs coverage counts + Manta's VCF as additional inputs, not
 just the BAM — more involved than Wham), cn.MOPS (needs a local module, no
-nf-core equivalent), the gCNV chain, cutoff derivation (GATK-SV's
-`FilterBatch` random forest — a strong simplify-first candidate, see
-[Where to simplify](#where-to-simplify-relative-to-upstream-gatk-sv)),
-genotyping itself (`TrainSVGenotyping`/`GenotypeSVs`), `MergeBatchSites`
-(GATK-SV's own site-list-only shortcut for cohorts that skip GATK-gCNV —
-not implemented; `CombineBatches`, above, is), `SVAnnotate`, panel bundle
-I/O, and the full `build_panel.nf` / `genotype_new_sample.nf`
-compositions.
+nf-core equivalent), the gCNV chain, `MergeBatchSites` (GATK-SV's own
+site-list-only shortcut for cohorts that skip GATK-gCNV — not
+implemented; `CombineBatches`, above, is), `SVAnnotate`, panel bundle I/O,
+`RegenotypeCNVs` (depth-call re-genotyping QC; `GenotypeBatch`'s own
+`GenerateRegenoCoverageMedians` output exists only for this, unconsumed
+for now), and the full `build_panel.nf` / `genotype_new_sample.nf`
+compositions. The whole genotyping prerequisite chain
+(`GenerateBatchMetrics` → `FilterBatchSites`/`AdjudicateSV` →
+`GenotypeBatch`) is now built — see [Path to
+genotyping](#path-to-genotyping-the-real-prerequisite-chain) above for
+the one open real-data validation gap (`TrainSVGenotyping`'s PE evidence
+pass, see `GenotypeBatch`'s own section). `FilterBatchSites.wdl`'s
+`PlotSVCountsPerSample` (outlier-sample QC plotting) remains deliberately
+unbuilt — genuinely not needed by anything downstream.
