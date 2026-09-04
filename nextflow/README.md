@@ -1542,6 +1542,36 @@ each one only appeared once real data was pushed all the way through:
   used files with meaningful literal paths (`/tmp/a...`, `/tmp/z...`), so
   it passed while hiding the exact real-path failure mode.
 
+#### `MEDIAN_COVERAGE` OOM'd for real on a real HPC run — no memory default existed at all
+
+A real HPC run of `genotype_batch.nf` (a few tens of samples) had
+`MEDIAN_COVERAGE` killed outright (exit 137, SIGKILL) partway through
+`Rscript medianCoverage.R`, right after it finished loading the
+`optparse` package — easy to misread as a missing-R-package problem from
+the log alone, but exit 137 with no R error message is the standard
+signature of an out-of-memory kill, not a package/environment issue.
+Root cause: unlike most other memory-hungry modules in this pipeline
+(`WHAMG`, `GATK_COLLECT_READ_COUNTS`, both already have their own
+documented fixes above), `MEDIAN_COVERAGE` had **no memory default at
+all** — `label 'process_single'` alone, and `process_single` itself has
+no `memory` set in `nextflow.config` (only `process_medium` does) — so it
+ran with whatever minimal implicit default Nextflow/the executor falls
+back to. `medianCoverage.R`'s own top-of-file comment already documents
+the risk ("Note: loads entire coverage matrix into memory... may pose a
+problem for large matrices"), so this was a predictable gap in hindsight,
+just not one caught by this module's own earlier validation (a tiny
+synthetic bincov matrix, far too small to hit any real memory ceiling).
+Fixed with an explicit `memory = 24.GB` in `conf/modules.config` —
+deliberately *not* GATK-SV's own `wdl/MedianCov.wdl` figure (a flat 80GB,
+"~0.5Gb per sample"), which is calibrated for their biobank-scale cohorts
+(hundreds-thousands of samples); this pipeline's own panel scale (a few
+tens of samples) doesn't need that much, so 24GB was chosen as generous
+headroom over the raw per-sample matrix size without provisioning for a
+cohort two orders of magnitude larger than this pipeline ever runs.
+**Revisit with real observed memory usage if this OOMs again** — 24GB is
+a reasoned estimate, not a value derived from an actual successful run's
+peak usage the way `GATK_COLLECT_READ_COUNTS`'s 12GB fix was.
+
 ### `FilterBatchSites`/`AdjudicateSV`: random-forest cutoff derivation
 
 `ADJUDICATE_SV` module, wrapping GATK-SV's `svtk adjudicate` (vendored,
