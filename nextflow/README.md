@@ -1625,6 +1625,30 @@ every metric as continuous noise around a single underlying quality
 signal instead, or the FDR-based cutoff logic specifically won't behave
 like it would on real data.
 
+#### A real HPC run confirmed the wiring all the way to `ADJUDICATE_SV` — then hit a real cohort-size floor, not a bug
+
+A real (non-stub, non-synthetic) HPC run of `genotype_batch.nf` made it
+all the way from the sample sheet through the full `GenerateBatchMetrics`
+chain into `ADJUDICATE_SV` before failing with `Exception: No clean
+variants found`, raised by `random_forest.py`'s own `RandomForest.__init__`
+(`adjudicate_BAF1`'s DUP-variant training set was empty after filtering).
+Root cause confirmed, not assumed: the test batch was a single trio (3
+samples) — `svtk adjudicate`'s random forest is built for GATK-SV's own
+cohort-scale batches (dozens to hundreds of samples), and needs a real
+population of DUP≥5kb calls with usable BAF metrics to train each of its
+seven internal passes on. At 3 samples, BAF signal in particular needs
+enough het sites across a real population to produce a meaningful
+Kolmogorov-Smirnov statistic — a trio doesn't supply that, independent of
+anything this pipeline does. **Not a pipeline bug**: every stage up to
+this point (Manta/Wham calling, stage-1 clustering, per-sample evidence
+collection, panel-wide evidence merging, the full `GenerateBatchMetrics`
+per-shard annotation chain) ran correctly against real data at real HPC
+scale, which is exactly what this run was actually able to confirm.
+`AdjudicateSV` itself needs a larger test cohort to validate meaningfully
+— revisit with a real multi-sample batch (GATK-SV's own docs suggest
+dozens+) rather than trying to make this specific random forest behave
+usefully on 3 samples.
+
 ### `FilterAnnotateVcf`: RF-score sites filtering
 
 `FILTER_ANNOTATE_VCF` module + `filter_batch_sites` subworkflow. Built
