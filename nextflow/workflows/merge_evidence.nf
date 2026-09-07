@@ -24,9 +24,14 @@ include { UTILS_INPUT_CHANNELS     } from '../subworkflows/local/utils_input_cha
 include { BAM_COLLECT_EVIDENCE     } from '../subworkflows/local/bam_collect_evidence/main'
 include { VCFS_MERGE_EVIDENCE      } from '../subworkflows/local/vcfs_merge_evidence/main'
 include { VCFS_MERGE_READ_COUNTS   } from '../subworkflows/local/vcfs_merge_read_counts/main'
+include { validateParameters       } from 'plugin/nf-schema'
 
 workflow {
     main:
+    // nf-schema never validates automatically -- see nextflow.config's
+    // own note on validation{} for why this call is required.
+    validateParameters()
+
     def pipelineRoot = "${projectDir}/.."
 
     [

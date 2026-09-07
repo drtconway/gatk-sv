@@ -36,9 +36,14 @@ include { BAM_CALL_WHAM          } from '../subworkflows/local/bam_call_wham/mai
 include { VCFS_CLUSTER_SVCLUSTER as VCFS_CLUSTER_SVCLUSTER_MANTA } from '../subworkflows/local/vcfs_cluster_svcluster/main'
 include { VCFS_CLUSTER_SVCLUSTER as VCFS_CLUSTER_SVCLUSTER_WHAM  } from '../subworkflows/local/vcfs_cluster_svcluster/main'
 include { VCFS_COMBINE_BATCHES   } from '../subworkflows/local/vcfs_combine_batches/main'
+include { validateParameters     } from 'plugin/nf-schema'
 
 workflow {
     main:
+    // nf-schema never validates automatically -- see nextflow.config's
+    // own note on validation{} for why this call is required.
+    validateParameters()
+
     def pipelineRoot = "${projectDir}/.."
 
     [

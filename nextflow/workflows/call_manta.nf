@@ -17,9 +17,14 @@
 
 include { UTILS_INPUT_CHANNELS } from '../subworkflows/local/utils_input_channels/main'
 include { BAM_CALL_MANTA       } from '../subworkflows/local/bam_call_manta/main'
+include { validateParameters   } from 'plugin/nf-schema'
 
 workflow {
     main:
+    // nf-schema never validates automatically -- see nextflow.config's
+    // own note on validation{} for why this call is required.
+    validateParameters()
+
     // projectDir resolves to the directory of *this* script (workflows/)
     // when run standalone, so the pipeline root -- where assets/ lives --
     // has to be derived rather than assumed to be projectDir itself.

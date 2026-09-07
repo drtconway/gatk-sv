@@ -120,6 +120,93 @@
             "exists": true,
             "description": "RepeatMasker BED, a GroupedSVCluster genomic context track."
         },
+        "sd_locs_vcf": {
+            "type": "string",
+            "format": "file-path",
+            "exists": true,
+            "description": "dbSNP sites, for CollectSVEvidence's site-depth/BAF collection (-F). Plain (uncompressed) VCF with a GATK .idx sibling index -- NOT bgzipped/.tbi like every other VCF in this pipeline. Required by workflows/merge_evidence.nf, generate_batch_metrics.nf, genotype_batch.nf."
+        },
+        "sd_locs_vcf_idx": {
+            "type": "string",
+            "format": "file-path",
+            "exists": true,
+            "description": "GATK .idx index for sd_locs_vcf (not a bgzip .tbi)."
+        },
+        "preprocessed_intervals": {
+            "type": "string",
+            "format": "file-path",
+            "exists": true,
+            "description": "Fixed genome-wide bins for CollectReadCounts (-L). Required by workflows/merge_evidence.nf, generate_batch_metrics.nf, genotype_batch.nf."
+        },
+        "segdups": {
+            "type": "string",
+            "format": "file-path",
+            "exists": true,
+            "description": "Segmental duplications BED, for SVRegionOverlap annotation in GenerateBatchMetrics. Required by workflows/generate_batch_metrics.nf, genotype_batch.nf."
+        },
+        "segdups_tbi": {
+            "type": "string",
+            "format": "file-path",
+            "exists": true,
+            "description": "Tabix index for segdups."
+        },
+        "rmsk": {
+            "type": "string",
+            "format": "file-path",
+            "exists": true,
+            "description": "RepeatMasker blacklist BED, for SVRegionOverlap annotation in GenerateBatchMetrics. Required by workflows/generate_batch_metrics.nf, genotype_batch.nf."
+        },
+        "rmsk_tbi": {
+            "type": "string",
+            "format": "file-path",
+            "exists": true,
+            "description": "Tabix index for rmsk."
+        },
+        "depth_training_bed": {
+            "type": "string",
+            "format": "file-path",
+            "exists": true,
+            "description": "Training site intervals for TrainSVGenotyping (--training-intervals). Plain (uncompressed) BED, not bgzipped/tabix-indexed -- GATK wants its own .idx for a bgzipped input, not a tabix .tbi (confirmed empirically, see nextflow/README.md). Required by workflows/genotype_batch.nf."
+        },
+        "bin_exclude": {
+            "type": "string",
+            "format": "file-path",
+            "exists": true,
+            "description": "Depth-evidence exclusion intervals (TrainSVGenotyping/GenotypeSVs --depth-exclusion-intervals). Required by workflows/genotype_batch.nf."
+        },
+        "bin_exclude_tbi": {
+            "type": "string",
+            "format": "file-path",
+            "exists": true,
+            "description": "Tabix index for bin_exclude."
+        },
+        "pesr_exclude_list": {
+            "type": "string",
+            "format": "file-path",
+            "exists": true,
+            "description": "PESR-evidence exclusion intervals (TrainSVGenotyping/GenotypeSVs --pesr-exclusion-intervals) -- the same underlying resource as pesr_exclude_intervals above, under GenotypeBatch's own WDL param name. Required by workflows/genotype_batch.nf."
+        },
+        "pesr_exclude_list_tbi": {
+            "type": "string",
+            "format": "file-path",
+            "exists": true,
+            "description": "Tabix index for pesr_exclude_list."
+        },
+        "chr_x": {
+            "type": "string",
+            "default": "chrX",
+            "description": "X chromosome name, for AggregateSVEvidence/TrainSVGenotyping/GenotypeSVs. Used by workflows/generate_batch_metrics.nf, genotype_batch.nf."
+        },
+        "chr_y": {
+            "type": "string",
+            "default": "chrY",
+            "description": "Y chromosome name, for AggregateSVEvidence/TrainSVGenotyping/GenotypeSVs. Used by workflows/generate_batch_metrics.nf, genotype_batch.nf."
+        },
+        "records_per_shard": {
+            "type": "integer",
+            "default": 10000,
+            "description": "Records per shard for ScatterVcf, in GenerateBatchMetrics' per-shard annotation chain. Used by workflows/generate_batch_metrics.nf, genotype_batch.nf."
+        },
         "outdir": {
             "type": "string",
             "format": "directory-path",

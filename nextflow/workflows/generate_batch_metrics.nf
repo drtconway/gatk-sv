@@ -47,9 +47,14 @@ include { VCFS_MERGE_EVIDENCE         } from '../subworkflows/local/vcfs_merge_e
 include { VCFS_MERGE_READ_COUNTS      } from '../subworkflows/local/vcfs_merge_read_counts/main'
 include { MEDIAN_COVERAGE             } from '../modules/local/median_coverage/main'
 include { VCFS_GENERATE_BATCH_METRICS } from '../subworkflows/local/vcfs_generate_batch_metrics/main'
+include { validateParameters          } from 'plugin/nf-schema'
 
 workflow {
     main:
+    // nf-schema never validates automatically -- see nextflow.config's
+    // own note on validation{} for why this call is required.
+    validateParameters()
+
     def pipelineRoot = "${projectDir}/.."
 
     [

@@ -21,9 +21,14 @@
 
 include { UTILS_INPUT_CHANNELS  } from '../subworkflows/local/utils_input_channels/main'
 include { BAM_COLLECT_EVIDENCE  } from '../subworkflows/local/bam_collect_evidence/main'
+include { validateParameters    } from 'plugin/nf-schema'
 
 workflow {
     main:
+    // nf-schema never validates automatically -- see nextflow.config's
+    // own note on validation{} for why this call is required.
+    validateParameters()
+
     def pipelineRoot = "${projectDir}/.."
 
     [

@@ -56,9 +56,17 @@ include { VCFS_GENERATE_BATCH_METRICS } from '../subworkflows/local/vcfs_generat
 include { ADJUDICATE_SV               } from '../modules/local/adjudicate_sv/main'
 include { FILTER_BATCH_SITES          } from '../subworkflows/local/filter_batch_sites/main'
 include { GENOTYPE_BATCH              } from '../subworkflows/local/genotype_batch/main'
+include { validateParameters          } from 'plugin/nf-schema'
 
 workflow {
     main:
+    // nf-schema never validates automatically (see nextflow.config's own
+    // note on validation{} above) -- this call is what actually enforces
+    // nextflow_schema.json (file existence, unrecognized --params
+    // including the classic --resume-instead-of-resume mistake) against
+    // this run's params.
+    validateParameters()
+
     def pipelineRoot = "${projectDir}/.."
 
     [

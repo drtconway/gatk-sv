@@ -19,9 +19,14 @@
 include { UTILS_INPUT_CHANNELS  } from '../subworkflows/local/utils_input_channels/main'
 include { BAM_CALL_MANTA        } from '../subworkflows/local/bam_call_manta/main'
 include { VCFS_CLUSTER_SVCLUSTER } from '../subworkflows/local/vcfs_cluster_svcluster/main'
+include { validateParameters      } from 'plugin/nf-schema'
 
 workflow {
     main:
+    // nf-schema never validates automatically -- see nextflow.config's
+    // own note on validation{} for why this call is required.
+    validateParameters()
+
     def pipelineRoot = "${projectDir}/.."
 
     [

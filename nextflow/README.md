@@ -563,6 +563,72 @@ command block, not just whether the tool runs — a process that runs
 successfully and produces a plausible-looking VCF can still be silently
 wrong in a way that only breaks two or three steps later.
 
+### Parameter validation actually needs `validateParameters()` — declaring the schema alone does nothing
+
+`nextflow_schema.json` + `validation.parametersSchema` in `nextflow.config`
+looks like it should be enough for `nf-schema` to validate `--params`
+automatically (this is how the older `nf-validation` plugin lineage
+worked, and how most nf-core boilerplate reads at a glance). **It is
+not**, at least as of `nf-schema@2.7.2` (the version pinned here):
+confirmed directly from the plugin's own source
+(`ValidationObserver.onFlowCreate()` — its only auto-registered hook —
+prints nothing but a "pin your plugin version" banner) that no parameter
+validation runs unless the pipeline's own code calls the
+`validateParameters()` extension function explicitly. Found for real, not
+suspected: a completely nonexistent `--fasta` path and an unrecognized
+`--resume` (a param, meant as the real Nextflow `-resume` flag but typed
+with two hyphens — see below) both ran the pipeline with zero validation
+error, for every `workflows/*.nf` entry point, until this was fixed.
+
+Every entry point now starts its `main:` block with:
+
+```groovy
+include { validateParameters } from 'plugin/nf-schema'
+
+workflow {
+    main:
+    validateParameters()
+    // ...
+```
+
+Also **not** the fix: `"additionalProperties": false` at the schema's top
+level, which was tried first and is actively wrong for an nf-core-style
+schema. `nf-schema` 2.7.2's `ParameterValidator` checks the JSON Schema
+`unevaluated` annotation (`unevaluatedProperties`), not
+`additionalProperties` — and `additionalProperties` doesn't see through
+`allOf`/`$defs` groupings the way nf-core schemas are structured, so it
+either false-positives on every real param or (as here, a flat schema
+with no `allOf`) just doesn't hook into the validator's actual
+unknown-param detection path at all. The real mechanism is
+`validation.logging.unrecognisedParams = 'error'` in `nextflow.config`
+(a level string: `skip`/`debug`/`info`/`warn`/`error`, defaulting to
+`warn` — silent-ish by default). Once `validateParameters()` actually
+runs, this turns any unrecognized `--param` into a hard error rather than
+a log line — including, usefully, a **distinct, specific** error for the
+exact `--resume`-instead-of-`-resume` mistake:
+`"You used a core Nextflow option with two hyphens: '--resume'. Please
+resubmit with '-resume'"` — `nf-schema` special-cases this against its own
+list of real Nextflow CLI options.
+
+This gap also meant the schema itself had silently drifted from the real
+param surface: roughly twenty real, currently-used params across
+`generate_batch_metrics.nf`/`genotype_batch.nf` (`segdups`, `rmsk`,
+`bin_exclude`, `pesr_exclude_list`, `depth_training_bed`, `sd_locs_vcf`,
+`chr_x`/`chr_y`, `records_per_shard`, and their `_tbi`/`_idx` siblings)
+had never been added to `nextflow_schema.json` at all, since nothing was
+ever checking that the schema stayed in sync with what the pipeline
+actually consumed. Backfilled as part of this fix — see the schema file
+itself for the full property list.
+
+**A real, costly incident this caused**: a from-scratch real HPC run
+(Manta/Wham calling + clustering + evidence collection across dozens of
+samples, several hours) appeared to silently ignore `--resume` on every
+retry, three separate times, before being traced to exactly this
+double-hyphen typo — with no error at any point telling the user their
+flag wasn't doing what they thought. `-resume` (single dash) is a real
+Nextflow CLI option and always worked when typed correctly; the schema
+gap meant the wrong spelling was never caught either.
+
 ### A wiring pitfall worth remembering
 
 `MANTA_GERMLINE` (like most nf-core modules) declares its reference genome
