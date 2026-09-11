@@ -44,6 +44,7 @@
 //
 
 include { UTILS_INPUT_CHANNELS        } from '../subworkflows/local/utils_input_channels/main'
+include { VALIDATE_SAMPLESHEET_PED    } from '../subworkflows/local/validate_samplesheet_ped/main'
 include { BAM_CALL_MANTA              } from '../subworkflows/local/bam_call_manta/main'
 include { BAM_CALL_WHAM               } from '../subworkflows/local/bam_call_wham/main'
 include { VCFS_CLUSTER_SVCLUSTER as VCFS_CLUSTER_SVCLUSTER_MANTA } from '../subworkflows/local/vcfs_cluster_svcluster/main'
@@ -87,6 +88,13 @@ workflow {
     samples   = UTILS_INPUT_CHANNELS.out.samples
     fasta     = UTILS_INPUT_CHANNELS.out.fasta
     fasta_fai = UTILS_INPUT_CHANNELS.out.fasta_fai
+
+    // Fail fast on any sample sheet / PED file inconsistency (ped_id with
+    // no matching PED individual_id, a ped_id shared by more than one
+    // sample, a dangling PED parent reference) -- rather than letting it
+    // surface as an opaque KeyError several stages and possibly hours
+    // into the run. See validate_samplesheet_ped's own top-of-file note.
+    VALIDATE_SAMPLESHEET_PED(samples, params.ped)
 
     contig_list = channel.of([ [id: 'contigs'], file(params.primary_contigs_list) ])
     contigs_fai = channel.of([ [id: 'contigs'], file(params.primary_contigs_fai) ])

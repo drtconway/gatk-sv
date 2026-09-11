@@ -18,6 +18,7 @@
 //
 
 include { UTILS_INPUT_CHANNELS  } from '../subworkflows/local/utils_input_channels/main'
+include { VALIDATE_SAMPLESHEET_PED } from '../subworkflows/local/validate_samplesheet_ped/main'
 include { BAM_CALL_WHAM         } from '../subworkflows/local/bam_call_wham/main'
 include { VCFS_CLUSTER_SVCLUSTER } from '../subworkflows/local/vcfs_cluster_svcluster/main'
 include { validateParameters      } from 'plugin/nf-schema'
@@ -46,6 +47,10 @@ workflow {
     }
 
     UTILS_INPUT_CHANNELS(params.input, pipelineRoot, params.fasta, params.fasta_fai)
+
+    // Fail fast on any sample sheet / PED file inconsistency -- see
+    // validate_samplesheet_ped's own top-of-file note.
+    VALIDATE_SAMPLESHEET_PED(UTILS_INPUT_CHANNELS.out.samples, params.ped)
 
     // primary_contigs_list (plain list, for vcfs_cluster_svcluster's
     // ploidy-table/format-conversion scripts) and primary_contigs_fai

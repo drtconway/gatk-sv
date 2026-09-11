@@ -233,6 +233,25 @@ SINGLETON01 SAMPLE_C       0            0            2    1
 - Singletons get a family of one, with `paternal_id`/`maternal_id` = 0.
 - One pedigree file per project, matching the panel being per-project.
 
+**Every entry point that consumes the PED file** (`cluster_manta.nf`,
+`cluster_wham.nf`, `combine_batches.nf`, `generate_batch_metrics.nf`,
+`genotype_batch.nf`) cross-checks it against the sample sheet up front,
+via `subworkflows/local/validate_samplesheet_ped`, and fails immediately
+— before any real work starts — if they disagree: a sample sheet row
+whose `ped_id` isn't a PED `individual_id`, a `ped_id` shared by more
+than one sample sheet row, or a PED `paternal_id`/`maternal_id` that
+isn't `0` and isn't itself a real `individual_id`. Built after this exact
+class of mismatch (a sample sheet row's `ped_id` not matching any PED
+`individual_id` — see [Status](#status)'s own note on `ped_id` vs
+`sample_id`) repeatedly surfaced as an opaque `KeyError` several stages
+into a real HPC run, once burning hours of already-completed upstream
+work before the mismatch was found. Deliberately narrow: pure text
+cross-referencing between the two input files, not a check against BAM
+headers (verifying a BAM's own `@RG SM:` tag matches its assigned sample
+identity is a different, heavier class of check — real upstream data
+mislabeling, not sample-sheet/PED inconsistency — and not something this
+validation does).
+
 ### Sample and family ID constraints
 
 Carried over from GATK-SV, which imposes these to avoid parsing errors in
