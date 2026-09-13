@@ -85,10 +85,10 @@ workflow VALIDATE_SAMPLESHEET_PED {
             // directly, but breaks trio logic downstream just as opaquely.
             ped_individuals.each { individual_id, parents ->
                 def (paternal_id, maternal_id) = parents
-                if (paternal_id != '0' && !ped_individuals.containsKey(paternal_id)) {
+                if (paternal_id != '0' && paternal_id != '' && !ped_individuals.containsKey(paternal_id)) {
                     errors << "PED individual '${individual_id}' has paternal_id '${paternal_id}', which is not itself a PED individual_id in ${ped_path}"
                 }
-                if (maternal_id != '0' && !ped_individuals.containsKey(maternal_id)) {
+                if (maternal_id != '0' && maternal_id != '' && !ped_individuals.containsKey(maternal_id)) {
                     errors << "PED individual '${individual_id}' has maternal_id '${maternal_id}', which is not itself a PED individual_id in ${ped_path}"
                 }
             }
