@@ -983,9 +983,26 @@ we don't currently wire up — so it's both lower than what already failed
 and not a formula worth chasing for this. Fixed with a flat, generous
 per-process override (`memory = 32.GB`, plus explicit `cpus`/`time`) in
 `conf/modules.config`'s `withName: 'WHAMG'` block, rather than
-reverse-engineering GATK-SV's metrics-dependent formula. Revisit with real
-per-sample memory usage data once more samples have run, if 32GB turns out
-to be too high (waste) or still too low (rare, larger-input samples).
+reverse-engineering GATK-SV's metrics-dependent formula.
+
+**32GB turned out to still be too low for a later real sample.** A
+different real HPC run OOM-killed (exit 137) a different sample's
+`whamg`, this time past "Finished loading reads", during "Gathering
+graphs from forest" — a later phase than the read-loading step the
+original 32GB fix was calibrated against. That sample's own log showed
+heavy breakpoint activity on decoy contigs (`chrUn_JTFH01...`) and HLA
+alt-haplotype contigs specifically. `-c` (`primary_contigs_list`) only
+restricts what `whamg` *calls* on (`wdl/Whamg.wdl:153`), not what it
+loads/indexes into memory beforehand — a sample with more reads mapped to
+decoy/alt contigs than usual needs more memory than `-c`'s restriction
+alone would suggest, since that read data is still loaded regardless of
+whether variants get called on it. Bumped to `memory = 64.GB` — doubled,
+not a marginal increase, for real headroom against the next similarly
+messy sample rather than chasing this exact failure point again. Revisit
+with real per-sample peak usage if this OOMs a third time; if it recurs
+often, filtering decoy/alt/HLA-mapped reads out of the BAM before
+`whamg` ever sees them (rather than just raising the memory ceiling
+again) would address the actual cause instead of its symptom.
 
 #### The OOM above should have failed the task outright, and didn't — a `pipefail` gap
 
