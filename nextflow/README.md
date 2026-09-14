@@ -1019,10 +1019,15 @@ observed for Manta) — `nextflow.config`'s new `withLabel: error_retry`
 block sets `errorStrategy`/`maxRetries` (matched to those two codes,
 not a broader speculative set — see that block's own comment for why),
 and each module's own `conf/modules.config` entry scales its resource
-directive by `task.attempt` (`WHAMG`: `64.GB * task.attempt` and
-`8.h * task.attempt`, i.e. 64/128/192GB across 3 total attempts;
-`MANTA_GERMLINE`: `8.h * task.attempt` on top of `process_medium`'s
-existing memory).
+directive by `task.attempt`. Doubles per attempt rather than scaling
+linearly (`16.GB * (2 ** (task.attempt - 1))`, i.e. `16/32/64/128GB`
+across `maxRetries = 3` → 4 total attempts, same doubling for
+`WHAMG`'s own `time`, and for `MANTA_GERMLINE`'s `time` on top of
+`process_medium`'s existing memory: `8/16/32/64h`) — a lower starting
+point (16GB, not the already-bumped 64GB) means a sample that only ever
+needed the original 32GB doesn't pay for 64GB on its very first
+attempt, while still reaching well past 64GB if a retry is needed at
+all.
 
 **A second, unrelated gap this surfaced**: `modules/nf-core/manta/
 germline/main.nf` (vendored, unmodified) already declared `label
