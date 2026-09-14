@@ -1004,6 +1004,40 @@ often, filtering decoy/alt/HLA-mapped reads out of the BAM before
 `whamg` ever sees them (rather than just raising the memory ceiling
 again) would address the actual cause instead of its symptom.
 
+#### Escalating retry, rather than manually re-bumping memory/time every time a messier sample appears
+
+Two real HPC failures for `WHAMG` (this section) and one for
+`MANTA_GERMLINE` — a `generateCandidateSV` step genuinely stalled 17+
+hours on one sample, eventually killed at `process_medium`'s 8h limit
+(exit 140, 128+12/SIGUSR2), traced to that one sample's own BAM, not a
+config issue — showed the same pattern: a flat resource bump fixes the
+*observed* failure, but the next messier real sample can still exceed
+it. Rather than keep re-bumping the flat value each time, both now
+retry with escalating resources on the specific exit codes that mean
+"ran out of resources" (`137` SIGKILL, `140` the Slurm-timeout code
+observed for Manta) — `nextflow.config`'s new `withLabel: error_retry`
+block sets `errorStrategy`/`maxRetries` (matched to those two codes,
+not a broader speculative set — see that block's own comment for why),
+and each module's own `conf/modules.config` entry scales its resource
+directive by `task.attempt` (`WHAMG`: `64.GB * task.attempt` and
+`8.h * task.attempt`, i.e. 64/128/192GB across 3 total attempts;
+`MANTA_GERMLINE`: `8.h * task.attempt` on top of `process_medium`'s
+existing memory).
+
+**A second, unrelated gap this surfaced**: `modules/nf-core/manta/
+germline/main.nf` (vendored, unmodified) already declared `label
+'error_retry'` — but nothing in this pipeline's own config ever defined
+what that label actually does, so it was silently inert the whole time,
+the same class of gap as `nf-schema`'s `validateParameters()` never
+being called (see `validation{}`'s own note in `nextflow.config`): a
+convention carried over from vendored/template code without the config
+that makes it do anything. `WHAMG` is also a vendored, unmodified
+nf-core module, but doesn't declare `error_retry` at all — rather than
+patch the vendored file to add a label for two lines' worth of sharing,
+`WHAMG`'s own `conf/modules.config` entry sets `errorStrategy`/
+`maxRetries` directly (identical values to the shared label, just not
+shared via it).
+
 #### The OOM above should have failed the task outright, and didn't — a `pipefail` gap
 
 Nextflow reported the OOM-killed `whamg` run above as a **successful**
