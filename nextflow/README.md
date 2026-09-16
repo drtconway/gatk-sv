@@ -1422,6 +1422,41 @@ payoff from the `ped_id` design decision made much earlier in this
 project (see [Sample and family ID
 constraints](#sample-and-family-id-constraints)).
 
+#### `GATK_PRINT_SV_EVIDENCE` OOM'd for real, at cohort scale — its memory cost scales with sample count, not per-sample file size
+
+A real HPC run on a cohort of ~180+ samples hit
+`java.lang.OutOfMemoryError: Java heap space` in `PrintSVEvidence`'s
+cohort-wide PE merge, at the module's own hardcoded 3GB fallback (used
+whenever `task.memory` is unset — same pattern as the `CollectReadCounts`
+OOM above). The stack trace pointed at `FeatureManager`/
+`MultiFeatureWalker` startup, building a `TabixReader` index for roughly
+the 180th of this run's per-sample `.pe.txt.gz` inputs: `PrintSVEvidence`
+opens every `-F` input file's tabix index up front, before merging
+anything, so its real memory cost is proportional to *cohort size* (how
+many samples are being merged in one call), not any single sample's
+evidence file size the way `WHAMG`'s and `MEDIAN_COVERAGE`'s costs are.
+
+That distinction matters here specifically because this pipeline's
+panels are meant to grow incrementally over time (see
+[Design: panel-based, two-tier
+pipeline](#design-panel-based-two-tier-pipeline)) — a flat memory value
+sized against today's cohort
+will eventually OOM again at some larger future cohort size, not just on
+a messier individual sample. Fixed with a generous flat bump (`32.GB`,
+`conf/modules.config`'s own `GATK_PRINT_SV_EVIDENCE` entry) rather than a
+per-sample formula, since we don't yet have enough real data points to
+derive one reliably — revisit with real memory-usage-vs-cohort-size data
+if this OOMs again at a larger panel.
+
+Deliberately *not* folded into the escalating `error_retry` pattern built
+for `WHAMG`/`MANTA_GERMLINE`: that pattern retries only on Slurm-level
+SIGKILL/timeout exit codes (137/140), but a JVM heap `OutOfMemoryError`
+is the JVM itself exiting on an uncaught exception — a plain exit 1, not
+a signal from outside the process. `error_retry`'s
+`task.exitStatus in [137, 140]` condition would never match this
+failure, so wiring it in would have given a false sense of resilience
+without actually retrying anything.
+
 #### `env` process outputs need a quoted string, not a bare identifier
 
 `BINCOV_SET_BINS` needed to emit a shell variable (`BINSIZE`, computed at
