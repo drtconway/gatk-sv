@@ -1422,7 +1422,7 @@ payoff from the `ped_id` design decision made much earlier in this
 project (see [Sample and family ID
 constraints](#sample-and-family-id-constraints)).
 
-#### `GATK_PRINT_SV_EVIDENCE` OOM'd for real, at cohort scale — its memory cost scales with sample count, not per-sample file size
+#### `GATK_PRINT_SV_EVIDENCE`/`GATK_SITE_DEPTH_TO_BAF` OOM'd for real, at cohort scale — their memory cost scales with sample count, not per-sample file size
 
 A real HPC run on a cohort of ~180+ samples hit
 `java.lang.OutOfMemoryError: Java heap space` in `PrintSVEvidence`'s
@@ -1436,6 +1436,14 @@ anything, so its real memory cost is proportional to *cohort size* (how
 many samples are being merged in one call), not any single sample's
 evidence file size the way `WHAMG`'s and `MEDIAN_COVERAGE`'s costs are.
 
+The very next real HPC run, after that fix went in, hit the identical
+failure in `GATK_SITE_DEPTH_TO_BAF` (the `SiteDepthtoBAF` walker,
+`vcfs_merge_evidence`'s SD→BAF merge) — not a sign the first fix didn't
+work, just a sibling `MultiFeatureWalker`-based module that hadn't been
+reached yet on the earlier run. Same hardcoded 3GB fallback, same
+tabix-index-building startup cost proportional to cohort size, same
+fix.
+
 That distinction matters here specifically because this pipeline's
 panels are meant to grow incrementally over time (see
 [Design: panel-based, two-tier
@@ -1443,10 +1451,11 @@ pipeline](#design-panel-based-two-tier-pipeline)) — a flat memory value
 sized against today's cohort
 will eventually OOM again at some larger future cohort size, not just on
 a messier individual sample. Fixed with a generous flat bump (`32.GB`,
-`conf/modules.config`'s own `GATK_PRINT_SV_EVIDENCE` entry) rather than a
-per-sample formula, since we don't yet have enough real data points to
-derive one reliably — revisit with real memory-usage-vs-cohort-size data
-if this OOMs again at a larger panel.
+`conf/modules.config`'s own `GATK_PRINT_SV_EVIDENCE` and
+`GATK_SITE_DEPTH_TO_BAF` entries) rather than a per-sample formula,
+since we don't yet have enough real data points to derive one reliably
+— revisit with real memory-usage-vs-cohort-size data if either OOMs
+again at a larger panel.
 
 Deliberately *not* folded into the escalating `error_retry` pattern built
 for `WHAMG`/`MANTA_GERMLINE`: that pattern retries only on Slurm-level
