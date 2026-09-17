@@ -1757,6 +1757,26 @@ cohort two orders of magnitude larger than this pipeline ever runs.
 a reasoned estimate, not a value derived from an actual successful run's
 peak usage the way `GATK_COLLECT_READ_COUNTS`'s 12GB fix was.
 
+It did OOM again, on a later real HPC run against a larger cohort
+(~180+ samples — the same growth that also caught out
+`GATK_PRINT_SV_EVIDENCE`/`GATK_SITE_DEPTH_TO_BAF` above): the original
+24GB was reasoned against "a few tens of samples", and the panel simply
+grew past that assumption, same as those two. Bumped to `64.GB` —
+real headroom above both the failed 24GB and a rough proportional
+estimate from GATK-SV's own 0.5GB/sample reference point (though that
+figure is calibrated for their heavier per-sample data shape, so treated
+as a ceiling to stay under, not a formula to hit exactly), while still
+short of GATK-SV's full 80GB default. Deliberately a flat bump again,
+not folded into the escalating `error_retry` pattern used for
+`WHAMG`/`MANTA_GERMLINE`: this OOM is deterministic for a given cohort
+size (every retry attempt loads the identical matrix), unlike
+`WHAMG`'s per-sample decoy/HLA read-count variance where a retry might
+plausibly help — doubling memory across attempts here only pays off if
+a bigger request would actually succeed, and an escalating scheme's
+later attempts risk requesting more memory than a given cluster's Slurm
+queue will even grant. Revisit again with real per-run memory usage
+data if 64GB OOMs a third time at a larger panel.
+
 ### `FilterBatchSites`/`AdjudicateSV`: random-forest cutoff derivation
 
 `ADJUDICATE_SV` module, wrapping GATK-SV's `svtk adjudicate` (vendored,
