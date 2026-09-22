@@ -1792,11 +1792,19 @@ CLI/output format, confirmed byte-identical output across every
 `-H`/`-b`/`-m` combination against the original script, and measured
 ~2.3x lower peak RSS / ~6x faster on a synthetic 200-sample × 50,000-bin
 matrix). `dockerfiles/median-coverage` bumped to image tag `0.2.0`
-(adds `data.table`/`matrixStats`) — **the image needs rebuilding and
-pushing to Docker Hub before any real run picks up this fix**; the
-Dockerfile change alone doesn't do anything on a cluster still pulling
-`0.1.0`. The `96.GB` config value is left as-is rather than walked back
-down now that the underlying algorithm is more memory-stable — real
+(adds `data.table`/`matrixStats`), built, and pushed to Docker Hub —
+confirmed by deleting the local image and re-pulling `0.2.0` fresh, then
+re-checking all three packages load. The initial local build silently
+produced an image with none of the three packages installed: MCRI's
+network intercepts outbound HTTPS via Zscaler, so `install.packages()`'s
+call to CRAN failed certificate verification the same way `npm ci` would
+without the root CA trusted (see `../Dockerfile`'s own note on this, and
+`dockerfiles/median-coverage/Dockerfile`'s matching fix — trust the
+Zscaler root CA via `update-ca-certificates`, `CURL_CA_BUNDLE` set
+explicitly as a belt-and-braces measure since R's libcurl download
+method should already read the OS trust store but wasn't confirmed to
+without it). The `96.GB` config value is left as-is rather than walked
+back down now that the underlying algorithm is more memory-stable — real
 headroom is still worth having, and there isn't yet a real-cohort data
 point confirming how far down it could safely go.
 
