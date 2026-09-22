@@ -3,8 +3,12 @@
 // matrix (vcfs_merge_read_counts's output), for GATK's
 // AggregateSVEvidence/AggregateDepthEvidence and TrainSVGenotyping/
 // GenotypeSVs (all take a --median-coverage file with this exact shape).
-// Wraps GATK-SV's own medianCoverage.R (vendored in ../../../bin/, see
-// wdl/MedianCov.wdl's CalcMedCov task, which this reproduces).
+// Wraps medianCoverage.R (adapted from GATK-SV's own script, vendored in
+// ../../../bin/ -- see wdl/MedianCov.wdl's CalcMedCov task, which this
+// reproduces, and bin/README.md for what was adapted and why: a
+// fread()/matrixStats rewrite of the original's read.table()/apply()
+// computation, same CLI/output, far more memory-stable as cohort size
+// grows).
 //
 // The script is passed in as an explicit `path` input rather than relying
 // on Nextflow's bin/-auto-PATH mechanism -- see
@@ -15,7 +19,7 @@ process MEDIAN_COVERAGE {
     tag "${meta.id}"
     label 'process_single'
 
-    container 'drtomc/gatk-sv-nf-median-coverage:0.1.0'
+    container 'drtomc/gatk-sv-nf-median-coverage:0.2.0'
 
     input:
     tuple val(meta), path(bincov_matrix)

@@ -3,13 +3,19 @@
 # Script to calculate median bin coverage per sample for all samples in a bincov
 # matrix
 
-# Note: loads entire coverage matrix into memory. This may pose a problem for
-# large matrices or on small-memory machines. Other workarounds exist from the
-# command line, but most are slower. One suggested alternative is to split
-# the input coverage matrices by chromosome prior to computing medians.
+# Adapted from GATK-SV's own src/WGD/bin/medianCoverage.R -- see
+# bin/README.md's own note on this file for why and how. Same CLI,
+# options, and output format as upstream; the internal computation was
+# rewritten (data.table::fread + matrixStats column/row medians on a
+# plain numeric matrix, instead of read.table + apply() over repeated
+# as.data.frame() copies) because the original's memory use scaled far
+# worse than the matrix's own size as this pipeline's cohorts grew --
+# see bin/README.md for the full explanation.
 
-# Load library
+# Load libraries
 require(optparse)
+require(data.table)
+require(matrixStats)
 
 # Define options
 option_list <- list(
@@ -31,11 +37,19 @@ if(length(args$args) != 2)
 {cat("Incorrect number of required positional arguments\n\n")
   stop()}
 
-# Read matrix
+# Read matrix. fread() in place of read.table(): same positional-column
+# semantics (no rownames), but streams the file into a data.table rather
+# than read.table's incremental per-column type-guessing/growing, which
+# is both slower and far more memory-hungry on a matrix with hundreds of
+# sample columns. comment.char="" (header mode) / "#" (no-header mode)
+# preserved exactly as upstream, for the same reason upstream sets it:
+# medianCoverage.R's own header-mode output starts with "#sample_id",
+# which fread's default comment handling would otherwise swallow as a
+# comment line the same way read.table's would.
 if(opts$header==T){
-  cov <- read.table(args$args[1], header=T, comment.char="", check.names=F)
+  cov <- fread(args$args[1], header=T, sep="\t", check.names=F, comment.char="")
 }else{
-  cov <- read.table(args$args[1], header=F, comment.char="#", check.names=F)
+  cov <- fread(args$args[1], header=F, sep="\t", check.names=F, comment.char="#")
 }
 
 # Function to compute medians per sample
@@ -44,14 +58,23 @@ covPerSample <- function(cov,downsample=1000000,mad=F){
   if(nrow(cov)>1000000){
     cov <- cov[sample(1:nrow(cov), downsample),]
   }
+  # Single numeric matrix, built once, instead of upstream's repeated
+  # as.data.frame(cov[,-c(1:3)]) at every one of the three median/mad
+  # passes below -- each of those was a fresh full-matrix copy plus
+  # apply()'s own per-row coercion overhead (apply() over a data.frame is
+  # markedly worse than over a matrix, since a data.frame is internally a
+  # list of columns that apply() has to rebind row-by-row). One matrix
+  # here, reused; rowMedians/colMedians run in C over it directly.
+  m <- as.matrix(cov[, -(1:3)])
   # Get medians with and without zero-cov bins
-  zerobins <- which(as.integer(apply(as.data.frame(cov[,-c(1:3)]), 1, median, na.rm=T)) == 0)
-  withzeros <- as.numeric(apply(as.data.frame(cov[,-c(1:3)]), 2, median, na.rm=T))
-  withoutzeros <- as.numeric(apply(as.data.frame(cov[-zerobins,-c(1:3)]), 2, median, na.rm=T))
+  bin_med <- rowMedians(m, na.rm=T)
+  zerobins <- which(as.integer(bin_med) == 0)
+  withzeros <- colMedians(m, na.rm=T)
+  withoutzeros <- colMedians(m[-zerobins, , drop=FALSE], na.rm=T)
   #Get SDs with and without zero-cov bins (if optioned)
   if(mad==T){
-    withzeros.mad <- as.numeric(apply(as.data.frame(cov[,-c(1:3)]), 2, mad, na.rm=T))
-    withoutzeros.mad <- as.numeric(apply(as.data.frame(cov[-zerobins,-c(1:3)]), 2, mad, na.rm=T))
+    withzeros.mad <- colMads(m, na.rm=T)
+    withoutzeros.mad <- colMads(m[-zerobins, , drop=FALSE], na.rm=T)
   }
   # Compile results df to return
   if(mad==T){
@@ -67,7 +90,7 @@ covPerSample <- function(cov,downsample=1000000,mad=F){
   }
   # Replace sample IDs if input matrix has header
   if(opts$header==T){
-    res$ID <- names(cov[, -c(1:3), drop = FALSE])
+    res$ID <- names(cov)[-(1:3)]
   }
   # Return output df
   return(res)
@@ -79,37 +102,37 @@ covPerBin <- function(cov,downsample=500,mad=F){
   if(ncol(cov)>503){
     cov <- cov[,sample(1:ncol(cov), downsample)]
   }
-  # Get medians with and without zero-cov samples
-  meds <- t(apply(as.data.frame(cov[,-c(1:3)]), 1, function(vals){
-    withzeros <- median(vals, na.rm=T)
-    if(any(vals>0)){
-      withoutzeros <- median(vals[which(vals>0)], na.rm=T)
-    }else{
-      withoutzeros <- NA
-    }
-    return(c(withzeros,withoutzeros))
-  }))
+  # Same matrix-once, C-level-ops approach as covPerSample above, applied
+  # row-wise (per bin, across samples) instead of column-wise.
+  m <- as.matrix(cov[, -(1:3)])
+  withzeros <- rowMedians(m, na.rm=T)
+  withoutzeros <- vapply(seq_len(nrow(m)), function(i){
+    vals <- m[i,]
+    pos <- vals[vals>0]
+    if(length(pos)>0) median(pos, na.rm=T) else NA_real_
+  }, numeric(1))
   # Get standard deviations (if optioned)
-  sds <- t(apply(as.data.frame(cov[,-c(1:3)]), 1, function(vals){
-    withzeros <- mad(vals, na.rm=T)
-    if(any(vals>0)){
-      withoutzeros <- mad(vals[which(vals>0)], na.rm=T)
-    }else{
-      withoutzeros <- NA
-    }
-    return(c(withzeros,withoutzeros))
-  }))
+  if(mad==T){
+    withzeros.mad <- rowMads(m, na.rm=T)
+    withoutzeros.mad <- vapply(seq_len(nrow(m)), function(i){
+      vals <- m[i,]
+      pos <- vals[vals>0]
+      if(length(pos)>0) mad(pos, na.rm=T) else NA_real_
+    }, numeric(1))
+  }
   # compile results df to return
   if(mad==T){
-    res <- data.frame("#chr"=cov[,1],"start"=cov[,2],"end"=cov[,3],
-                      "Med_withZeros"=meds[,1],
-                      "Med_withoutZeros"=meds[,2],
-                      "MAD_withZeros"=sds[,1],
-                      "MAD_withoutZeros"=sds[,2])
+    res <- data.frame("#chr"=cov[[1]],"start"=cov[[2]],"end"=cov[[3]],
+                      "Med_withZeros"=withzeros,
+                      "Med_withoutZeros"=withoutzeros,
+                      "MAD_withZeros"=withzeros.mad,
+                      "MAD_withoutZeros"=withoutzeros.mad,
+                      check.names=FALSE)
   }else{
-    res <- data.frame("#chr"=cov[,1],"start"=cov[,2],"end"=cov[,3],
-                      "Med_withZeros"=meds[,1],
-                      "Med_withoutZeros"=meds[,2])
+    res <- data.frame("#chr"=cov[[1]],"start"=cov[[2]],"end"=cov[[3]],
+                      "Med_withZeros"=withzeros,
+                      "Med_withoutZeros"=withoutzeros,
+                      check.names=FALSE)
   }
   # Return output df
   return(res)

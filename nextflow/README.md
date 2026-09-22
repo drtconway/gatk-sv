@@ -1777,6 +1777,29 @@ later attempts risk requesting more memory than a given cluster's Slurm
 queue will even grant. Revisit again with real per-run memory usage
 data if 64GB OOMs a third time at a larger panel.
 
+It did OOM a third time, at 64GB, on the panel's continued growth — at
+that point bumped again to `96.GB` directly in `conf/modules.config`.
+Three flat-bump recurrences in a row was the signal to stop guessing at
+a bigger number and look at *why* memory use kept outpacing cohort
+growth rather than scaling with it predictably: see
+[`bin/medianCoverage.R`: adapted, not verbatim (memory-stability
+rewrite)](bin/README.md#medianCoverager-adapted-not-verbatim-memory-stability-rewrite)
+in `bin/README.md` for the actual root cause (repeated full-matrix
+copies from `read.table()`+`as.data.frame()`+`apply()`, not the raw
+matrix size itself) and the fix (`data.table::fread()` +
+`matrixStats::colMedians()`/`rowMedians()` on a single matrix, same
+CLI/output format, confirmed byte-identical output across every
+`-H`/`-b`/`-m` combination against the original script, and measured
+~2.3x lower peak RSS / ~6x faster on a synthetic 200-sample × 50,000-bin
+matrix). `dockerfiles/median-coverage` bumped to image tag `0.2.0`
+(adds `data.table`/`matrixStats`) — **the image needs rebuilding and
+pushing to Docker Hub before any real run picks up this fix**; the
+Dockerfile change alone doesn't do anything on a cluster still pulling
+`0.1.0`. The `96.GB` config value is left as-is rather than walked back
+down now that the underlying algorithm is more memory-stable — real
+headroom is still worth having, and there isn't yet a real-cohort data
+point confirming how far down it could safely go.
+
 ### `FilterBatchSites`/`AdjudicateSV`: random-forest cutoff derivation
 
 `ADJUDICATE_SV` module, wrapping GATK-SV's `svtk adjudicate` (vendored,

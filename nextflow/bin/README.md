@@ -11,7 +11,7 @@ these support.
 | `bin/ploidy_table_from_ped.py` | `src/sv-pipeline/scripts/ploidy_table_from_ped.py` | `483973d6db3a8a9ba8fa72c5756a8ab53e7877f4` (2025-10-02) |
 | `bin/format_svtk_vcf_for_gatk.py` | `src/sv-pipeline/scripts/format_svtk_vcf_for_gatk.py` | `483973d6db3a8a9ba8fa72c5756a8ab53e7877f4` (2025-10-02) |
 | `bin/format_gatk_vcf_for_svtk.py` | `src/sv-pipeline/scripts/format_gatk_vcf_for_svtk.py` | `483973d6db3a8a9ba8fa72c5756a8ab53e7877f4` (2025-10-02) |
-| `bin/medianCoverage.R` | `src/WGD/bin/medianCoverage.R` | `f091af0be6836446a9118f5db7cc3de9bde44fa6` (2025-09-02) |
+| `bin/medianCoverage.R` | `src/WGD/bin/medianCoverage.R` | `f091af0be6836446a9118f5db7cc3de9bde44fa6` (2025-09-02) — **adapted, not verbatim**, see below |
 | `bin/aggregate.py` | `src/sv-pipeline/02_evidence_assessment/02e_metric_aggregation/scripts/aggregate.py` | `2d5d8a44802548a184d7e57bcc967d2e611e8349` (2025-12-18) — **adapted, not verbatim**, see below |
 | `bin/adjudicate_sv.py` | `src/svtk/svtk/adjudicate/adjudicate_sv.py` | `2d5d8a44802548a184d7e57bcc967d2e611e8349` (2025-12-18) — **adapted, not verbatim**, see below |
 | `bin/random_forest.py` | `src/svtk/svtk/adjudicate/random_forest.py` | `9c6fbf562f750002253a37873d132db030657f7c` (2022-06-10) |
@@ -33,14 +33,59 @@ src/sv-pipeline/scripts/<script>` from the repo root).
 
 ## `medianCoverage.R`: first vendored R script
 
-Only third-party dependency is the CRAN `optparse` package (base R
-otherwise) — no bioconductor or compiled genomics library needed, unlike
-GATK-SV's own `sv_pipeline_qc_docker` (the large, general-purpose image
-this task runs in upstream). Given its own container
-(`dockerfiles/median-coverage`, `r-base` + `optparse`), rather than
-pulling that image just for this one script — same reasoning as the
-Python scripts above having their own purpose-built container instead of
-GATK-SV's `sv-pipeline-virtual-env`.
+Only third-party dependencies are CRAN packages (base R otherwise) — no
+bioconductor or compiled genomics library needed, unlike GATK-SV's own
+`sv_pipeline_qc_docker` (the large, general-purpose image this task runs
+in upstream). Given its own container (`dockerfiles/median-coverage`,
+`r-base` + CRAN packages), rather than pulling that image just for this
+one script — same reasoning as the Python scripts above having their own
+purpose-built container instead of GATK-SV's `sv-pipeline-virtual-env`.
+
+### `medianCoverage.R`: adapted, not verbatim (memory-stability rewrite)
+
+Upstream's own top-of-file comment already documents the risk: "loads
+entire coverage matrix into memory... may pose a problem for large
+matrices". On real HPC runs, this turned out to be worse than "loads the
+matrix once" — see `nextflow/README.md`'s own "`MEDIAN_COVERAGE` OOM'd"
+entries. The actual mechanism: `covPerSample()`'s three
+`as.integer/as.numeric(apply(as.data.frame(cov[,-c(1:3)]), ...))` calls
+(one to find all-zero bins, one each for the with-zeros/without-zeros
+medians) each build a **fresh full copy** of the whole bin×sample matrix
+via `as.data.frame()`, then `apply()` over a data.frame forces per-row
+coercion (a data.frame is internally a list of columns; `apply` has to
+rebind each row from that layout) on top of the copy itself. Combined
+with upstream's own `read.table()` (which grows/copies internally as it
+type-guesses each column), peak memory use was several times the raw
+matrix size — and grew with cohort size (more sample columns) in a way
+that kept outpacing every flat memory bump tried before this rewrite.
+
+Adapted to keep the *same* algorithm (median-with-zeros,
+median-without-zeros via all-zero-bin exclusion, same CLI/options/output
+format, same positional-column/header-comment-char handling) but avoid
+the repeated-copy cost: `data.table::fread()` in place of `read.table()`
+(streams the file into columnar storage rather than incremental
+per-column growth), and a single `as.matrix()` conversion reused across
+`matrixStats::rowMedians()`/`colMedians()`/`colMads()`/`rowMads()` calls
+(C-level, operate directly on a numeric matrix, no per-call data.frame
+copy or `apply()` row-rebinding) in place of the three-plus repeated
+`as.data.frame()`+`apply()` passes. `covPerBin()` (the `-b`/`--binwise`
+path — not actually exercised by this pipeline's own
+`modules/local/median_coverage` call site, which always passes `-H` and
+never `-b`, but kept correct rather than left to silently regress) was
+adapted the same way, with a `vapply` for the without-zeros row median
+(no `matrixStats` row-conditional-subset primitive exists for "median of
+just the positive values in this row").
+
+Needs `data.table`/`matrixStats` added to `dockerfiles/median-coverage`
+(now at image tag `0.2.0` — rebuild and push before deploying this
+change to any real run, the running cluster won't pick up the new script
+until the new image tag is actually pulled). **If re-syncing from
+upstream**, diff against `src/WGD/bin/medianCoverage.R` directly —
+`read.table`/`apply`/`as.data.frame` call sites will show as a diff
+against this file's `fread`/matrix-based equivalents; that's expected,
+not drift to fix. Re-check any upstream algorithm change (not just
+formatting) still holds under the matrix-based rewrite before
+re-vendoring verbatim over this file.
 
 ## `aggregate.py`: adapted, not verbatim
 
