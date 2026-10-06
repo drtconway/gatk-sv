@@ -1082,6 +1082,45 @@ is the natural place to fix a shell-semantics gap. Re-validated all three
 existing `script:`/`stub:` block (none rely on tolerating an unset
 variable or a failing pipeline stage).
 
+#### `GATK4_SVCLUSTER` OOM'd at cohort scale — and `process_single` was never defined at all
+
+A real HPC run (~480 samples) failed in stage-1 Wham clustering
+(`VCFS_CLUSTER_SVCLUSTER_WHAM:GATK4_SVCLUSTER`) with
+`java.lang.OutOfMemoryError: Java heap space`, 24 minutes in, at
+`chr1:143.2M` (dense pericentromeric calls). The stack trace pointed at
+`SVCallRecordUtils.populateGenotypesForMissingSamplesWithAlleles`, which
+fills in a genotype for every cohort sample on every output record, so
+memory scales with cohort size × local cluster density. That's the same
+cohort-scaling class as the
+[`PrintSVEvidence`/`SiteDepthtoBAF` OOMs](#gatk_print_sv_evidencegatk_site_depth_to_baf-oomd-for-real-at-cohort-scale--their-memory-cost-scales-with-sample-count-not-per-sample-file-size).
+
+The heap was 3GB because the module's `process_single` label had no
+definition anywhere in this pipeline's config. `task.memory` was unset,
+so the vendored module used its hardcoded 3GB fallback. This is the
+**fourth** GATK module to OOM this way (after `CollectReadCounts`,
+`PrintSVEvidence` and `SiteDepthtoBAF`), each fixed individually. ~34
+modules declare `process_single`.
+
+Fixed in two parts:
+
+- `conf/modules.config`: `withName: 'GATK4_SVCLUSTER.*'` (regex, so it
+  also covers stage 2's `_JOIN`/`_SITES` aliases), 32GB doubling per
+  attempt, retried up to twice.
+- `nextflow.config`: `withLabel: process_single { memory = 8.GB }`, so no
+  module silently gets the 3GB fallback again.
+
+One correction to the reasoning in the `PrintSVEvidence` entry above:
+this JVM OOM reported **exit 137**, not exit 1. The likely cause is that
+Slurm's cgroup killed the job too, since no memory had been requested.
+The SVCluster retry therefore matches `[1, 137, 140]`. Retrying on exit 1
+can waste attempts on a genuine bug, which is why `maxRetries` is only 2.
+
+The same run also hit 73 `MANTA_GERMLINE` timeouts (exit 140): 50 at
+8h and 23 more at 16h. That's too many to be the isolated stalled-BAM
+case documented in `conf/modules.config`, and it's still uninvestigated.
+`errorStrategy = 'finish'` also meant the run waited ~16h for those
+in-flight Manta jobs after the SVCluster failure before exiting.
+
 ### Harmonisation stage 2: cross-caller merge
 
 `subworkflows/local/vcfs_combine_batches` and its standalone entry point
