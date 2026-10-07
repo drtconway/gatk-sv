@@ -1115,11 +1115,31 @@ Slurm's cgroup killed the job too, since no memory had been requested.
 The SVCluster retry therefore matches `[1, 137, 140]`. Retrying on exit 1
 can waste attempts on a genuine bug, which is why `maxRetries` is only 2.
 
-The same run also hit 73 `MANTA_GERMLINE` timeouts (exit 140): 50 at
-8h and 23 more at 16h. That's too many to be the isolated stalled-BAM
-case documented in `conf/modules.config`, and it's still uninvestigated.
-`errorStrategy = 'finish'` also meant the run waited ~16h for those
-in-flight Manta jobs after the SVCluster failure before exiting.
+#### `MANTA_GERMLINE`'s 8h first attempt was too short for half the cohort
+
+The same run (and the next one) also hit 73 `MANTA_GERMLINE` timeouts
+(exit 140). This wasn't the isolated stalled-BAM case documented in
+`conf/modules.config`. Successful Manta runs spread evenly from 7.9h to
+15.7h. About 49 samples blew the 8h first attempt every run, wasting
+~400 CPU-hours, and 24 more hit the 16h second attempt. Because
+`-resume` restarts failed tasks at attempt 1, a sample needing more than
+16h only finished if a single run survived ~56h of attempts.
+
+Fixed in `conf/modules.config`: Manta now starts at 24h (then 48h, 96h,
+`maxRetries = 2`) with 8 CPUs, matching GATK-SV's own Manta task
+(`wdl/Manta.wdl:79`). Manta normally takes a few hours on 30x WGS at that
+core count. If runtimes stay long, check Slurm CPU efficiency
+(`sacct --format=Elapsed,AllocCPUS,TotalCPU`) for an I/O bound (CRAM
+decoding, shared filesystem) rather than adding more time.
+
+#### `errorStrategy` changed from `'finish'` to `'terminate'`
+
+With `'finish'`, the run waited ~16h after the SVCluster failure for
+in-flight Manta jobs before exiting. 25 of those jobs did complete and
+were cached for `-resume`, so the wait wasn't entirely wasted. We
+switched to `'terminate'` anyway, to fail fast. The trade-off is that
+running Slurm jobs are killed on any terminal failure, and their partial
+work restarts from scratch on the next `-resume`.
 
 ### Harmonisation stage 2: cross-caller merge
 
