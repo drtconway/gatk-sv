@@ -1525,6 +1525,22 @@ a signal from outside the process. `error_retry`'s
 failure, so wiring it in would have given a false sense of resilience
 without actually retrying anything.
 
+#### `AggregateSVEvidence` OOM'd at the 8GB `process_single` default
+
+On the run after the `process_single` default went in, one of ~22
+`GATK_AGGREGATESVEVIDENCE` shards (`vcfs_generate_batch_metrics`) died
+with `java.lang.OutOfMemoryError` at `-Xmx6553M`. Before dying it made no
+progress at `chr2:32M` for ~30 minutes, which looks like the JVM spending
+all its time on garbage collection. The stack trace was in
+`FeatureCache.fill`, prefetching cohort-wide PE/SR/BAF evidence for one
+record's query interval. That cost scales with cohort size × the
+interval's span, so a single large SV can blow up one shard while its
+siblings pass.
+
+GATK-SV's own default is 7.5GB, but it runs on per-batch evidence files,
+which are smaller than our panel-wide ones. Fixed in `conf/modules.config`:
+16GB doubling per attempt, retried on exit 1 or 137.
+
 #### `env` process outputs need a quoted string, not a bare identifier
 
 `BINCOV_SET_BINS` needed to emit a shell variable (`BINSIZE`, computed at
