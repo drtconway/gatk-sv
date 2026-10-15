@@ -5,6 +5,11 @@
 // reproduces the `bcftools query | awk | sort` portion; the actual
 // intersect + filtering happen in bedtools/intersect and bcftools/view.
 //
+// task.ext.padding (default 0, i.e. GATK-SV's exact behaviour) widens each
+// breakpoint by that many bp on both sides, so a variant is also excluded
+// when an exclude interval lies within its evidence query window rather
+// than strictly under the breakpoint.
+//
 process VCF_ENDS_BED {
     tag "$meta.id"
     label 'process_single'
@@ -24,9 +29,10 @@ process VCF_ENDS_BED {
 
     script:
     def prefix = task.ext.prefix ?: "${meta.id}"
+    def padding = task.ext.padding ?: 0
     """
     bcftools query -f '%CHROM\\t%POS\\t%POS\\t%ID\\t%SVTYPE\\n%CHROM\\t%END\\t%END\\t%ID\\t%SVTYPE\\n%CHR2\\t%END2\\t%END2\\t%ID\\t%SVTYPE\\n' ${vcf} \\
-        | awk '\$1!="." && \$2!="."' \\
+        | awk -v pad=${padding} 'BEGIN{OFS="\\t"} \$1!="." && \$2!="." { s=\$2-pad; if (s<0) s=0; print \$1, s, \$3+pad, \$4, \$5 }' \\
         | sort -k1,1V -k2,2n -k3,3n \\
         > ${prefix}.ends.bed
     """

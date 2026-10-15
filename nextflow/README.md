@@ -1541,6 +1541,27 @@ GATK-SV's own default is 7.5GB, but it runs on per-batch evidence files,
 which are smaller than our panel-wide ones. Fixed in `conf/modules.config`:
 16GB doubling per attempt, retried on exit 1 or 137.
 
+**That diagnosis was incomplete.** The same shard then failed at 16, 32
+and 64GB, always at the same record. Replaying GATK's evidence lookups
+with `tabix` found the cause. A PE lookup for a DEL starting at
+`chr2:32,916,626` covers 1kb, and `cohort.pe.txt.gz` has **91 million or
+more lines** there. The pileup is a technical artifact present in every
+sample: same-strand pairs with mates 0–250bp apart, ~50,000x coverage. It
+is already on GATK-SV's PE/SR exclude list (`chr2:32915873-32916625`),
+but the exclude check, which matches GATK-SV, only drops a variant if a
+breakpoint falls *inside* an excluded region. This variant starts 1bp
+past the end of it. GATK's PE lookup window (`--pe-outer-window`, 500bp)
+then reaches back into the pileup and loads all of it. A second hotspot
+at `chr2:32,866,672` was missed the same way, by 1–12bp.
+
+Fixed by widening the breakpoint check: `VCF_ENDS_BED` takes
+`ext.padding` (default 0, GATK-SV's exact behaviour), which
+`conf/modules.config` sets to 500bp for both exclusion passes in
+`vcfs_cluster_svcluster`. Variants within 500bp of an excluded region are
+now dropped. That's a small, deliberate divergence from GATK-SV, which
+only ever needs to evidence-test such variants inside a batch-sized
+evidence file. The memory escalation above stays as a safety margin.
+
 #### `env` process outputs need a quoted string, not a bare identifier
 
 `BINCOV_SET_BINS` needed to emit a shell variable (`BINSIZE`, computed at
