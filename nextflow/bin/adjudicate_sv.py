@@ -149,47 +149,34 @@ def adjudicate_RD(metrics):
     cutoff_dfs[1]['min_svsize'] = 0
     cutoff_dfs[1]['svtype'] = 'CNV'
 
-    # Depth dels
+    # Depth dels / dups. Skipped when there are no depth calls (this
+    # pipeline has no depth caller yet): an empty training set makes
+    # labeler.label() return a DataFrame and the assignment below fail.
     cutoff_features = {'indep': ['RDQ', 'RD_MEDIAN_SEPARATION'],
                        'dep': []}
-    testable = metrics.loc[metrics.name.str.contains('_depth_') &
-                           (metrics.svtype == 'DEL')].copy()
-    trainable = testable.loc[(testable.svsize >= 5000) &
-                             (testable.poor_region_cov < 0.3) &
-                             ~testable.chrom.isin(ALLOSOMES) &
-                             ~testable.is_outlier_specific].copy()
-    trainable.loc[:, 'label'] = labeler.label(trainable)
-    trainable.to_csv('RD_depth_DEL_trainable.txt', index=False, sep='\t')
+    for svtype in ('DEL', 'DUP'):
+        testable = metrics.loc[metrics.name.str.contains('_depth_') &
+                               (metrics.svtype == svtype)].copy()
+        if testable.empty:
+            sys.stderr.write('No depth {0} calls; skipping\n'.format(svtype))
+            continue
+        trainable = testable.loc[(testable.svsize >= 5000) &
+                                 (testable.poor_region_cov < 0.3) &
+                                 ~testable.chrom.isin(ALLOSOMES) &
+                                 ~testable.is_outlier_specific].copy()
+        trainable.loc[:, 'label'] = labeler.label(trainable)
+        trainable.to_csv('RD_depth_{0}_trainable.txt'.format(svtype),
+                         index=False, sep='\t')
 
-    cutoffs = rf_classify(metrics, trainable, testable, features,
-                          labeler, cutoff_features, 'RD_prob',
-                          clean_cutoffs=True)
+        cutoffs = rf_classify(metrics, trainable, testable, features,
+                              labeler, cutoff_features, 'RD_prob',
+                              clean_cutoffs=True)
 
-    cutoff_dfs.append(cutoffs)
-    cutoff_dfs[2]['algtype'] = 'Depth'
-    cutoff_dfs[2]['max_svsize'] = np.nan
-    cutoff_dfs[2]['min_svsize'] = 5000
-    cutoff_dfs[2]['svtype'] = 'DEL'
-
-    # Depth dups
-    testable = metrics.loc[metrics.name.str.contains('_depth_') &
-                           (metrics.svtype == 'DUP')].copy()
-    trainable = testable.loc[(testable.svsize >= 5000) &
-                             (testable.poor_region_cov < 0.3) &
-                             ~testable.chrom.isin(ALLOSOMES) &
-                             ~testable.is_outlier_specific].copy()
-    trainable.loc[:, 'label'] = labeler.label(trainable)
-    trainable.to_csv('RD_depth_DUP_trainable.txt', index=False, sep='\t')
-
-    cutoffs = rf_classify(metrics, trainable, testable, features,
-                          labeler, cutoff_features, 'RD_prob',
-                          clean_cutoffs=True)
-
-    cutoff_dfs.append(cutoffs)
-    cutoff_dfs[3]['algtype'] = 'Depth'
-    cutoff_dfs[3]['max_svsize'] = np.nan
-    cutoff_dfs[3]['min_svsize'] = 5000
-    cutoff_dfs[3]['svtype'] = 'DUP'
+        cutoffs['algtype'] = 'Depth'
+        cutoffs['max_svsize'] = np.nan
+        cutoffs['min_svsize'] = 5000
+        cutoffs['svtype'] = svtype
+        cutoff_dfs.append(cutoffs)
 
     # Fail depth-only below 5 kb
     metrics.loc[metrics.name.str.contains('_depth_') &
@@ -282,7 +269,10 @@ def consolidate_score(metrics, cutoffs):
     depth_cutoffs = cutoffs.loc[(cutoffs.algtype == 'Depth') &
                                 (cutoffs.test == 'RD') &
                                 (cutoffs.svtype == 'DEL')]
-    depth_pass = metrics.svsize >= depth_cutoffs.min_svsize[0]
+    # No depth cutoffs (no depth calls): fall back to the 5 kb size floor
+    # the depth passes would have used, with no metric cutoffs.
+    depth_pass = metrics.svsize >= (depth_cutoffs.min_svsize[0]
+                                    if not depth_cutoffs.empty else 5000)
     for idx, row in depth_cutoffs.iterrows():
         depth_pass = depth_pass & metrics[row['metric']] >= row['cutoff']
 
@@ -295,7 +285,10 @@ def consolidate_score(metrics, cutoffs):
     depth_cutoffs = cutoffs.loc[(cutoffs.algtype == 'Depth') &
                                 (cutoffs.test == 'RD') &
                                 (cutoffs.svtype == 'DUP')]
-    depth_pass = metrics.svsize >= depth_cutoffs.min_svsize[0]
+    # No depth cutoffs (no depth calls): fall back to the 5 kb size floor
+    # the depth passes would have used, with no metric cutoffs.
+    depth_pass = metrics.svsize >= (depth_cutoffs.min_svsize[0]
+                                    if not depth_cutoffs.empty else 5000)
     for idx, row in depth_cutoffs.iterrows():
         depth_pass = depth_pass & metrics[row['metric']] >= row['cutoff']
 

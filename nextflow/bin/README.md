@@ -127,11 +127,21 @@ logic files verbatim (`adjudicate_sv.py`, `random_forest.py`,
 `aggregate.py`'s own adaptation, avoiding an unrelated dependency for code
 that doesn't need it.
 
-`adjudicate_sv.py`'s only adaptation: `from svtk.adjudicate import
-rf_classify, labelers` became `from random_forest import rf_classify` +
-`import labelers` (flat imports, since these are now sibling files in the
-same directory rather than a real Python package) — everything else
-unchanged. `random_forest.py`/`labelers.py` needed no changes at all (no
+`adjudicate_sv.py`'s adaptations:
+
+1. `from svtk.adjudicate import rf_classify, labelers` became `from
+   random_forest import rf_classify` + `import labelers` (flat imports,
+   since these are now sibling files rather than a real Python package).
+2. No-depth-caller support. Upstream assumes depth calls (`_depth_` in the
+   name) always exist. With none, `adjudicate_RD`'s depth DEL/DUP passes
+   crash: `labeler.label()` on an empty frame returns a DataFrame, giving
+   "Cannot set a DataFrame with multiple columns to the single column
+   label". Also, `consolidate_score` indexes `min_svsize[0]` of an empty
+   Depth-cutoffs table. The depth passes are now skipped when there are no
+   depth calls, and `consolidate_score` falls back to the 5 kb size floor
+   with no metric cutoffs. With depth calls present, output is unchanged.
+
+`random_forest.py`/`labelers.py` needed no changes at all (no
 cross-module imports beyond stdlib/numpy/pandas/sklearn).
 `adjudicate.py`'s own CLI wrapper mirrors `svtk/cli/adjudicate.py`
 directly, with the same import adaptation.
@@ -139,7 +149,9 @@ directly, with the same import adaptation.
 **If re-syncing `adjudicate_sv.py` from upstream**, diff against
 `src/svtk/svtk/adjudicate/adjudicate_sv.py` directly — the `from
 svtk.adjudicate import rf_classify, labelers` line will show as a diff
-against this file's flat imports; that's expected, not drift to fix.
+against this file's flat imports, which is expected. Re-apply the
+no-depth-caller guards (marked by comments) until this pipeline has a
+depth caller.
 
 ## Known gap: pysam version
 

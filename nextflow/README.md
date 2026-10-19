@@ -1981,6 +1981,25 @@ scale, which is exactly what this run was actually able to confirm.
 dozens+) rather than trying to make this specific random forest behave
 usefully on 3 samples.
 
+#### At cohort scale (~480 samples), `ADJUDICATE_SV` crashed on the missing depth caller
+
+The ~480-sample run passed BAF1, SR1 and the PESR RD passes. It then
+failed in `adjudicate_RD`'s depth-DEL pass with `ValueError: Cannot set a
+DataFrame with multiple columns to the single column label`. Upstream
+assumes depth calls (`_depth_` variant names) always exist, and this
+pipeline has none yet. The empty training set makes `labeler.label()`
+(`DataFrame.apply(axis=1)`) return an empty DataFrame instead of a
+Series. `consolidate_score` had the same assumption: it reads
+`min_svsize[0]` from the Depth cutoffs.
+
+Fix (in `bin/adjudicate_sv.py`, see `bin/README.md`): skip the depth passes
+when there are no depth calls. In `consolidate_score`, a PESR call ≥5 kb
+that passes RD but not PE/SR then keeps its `RD_prob` score after only the
+5 kb size floor. The depth-call metric cutoffs, which would normally also
+gate it, don't exist. Revisit when a depth caller is added. Verified
+locally in the real container, on synthetic metrics with and without
+depth calls. With depth calls, the Depth cutoff rows are still produced.
+
 ### `FilterAnnotateVcf`: RF-score sites filtering
 
 `FILTER_ANNOTATE_VCF` module + `filter_batch_sites` subworkflow. Built
