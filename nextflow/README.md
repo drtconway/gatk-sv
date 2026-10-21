@@ -2000,6 +2000,21 @@ gate it, don't exist. Revisit when a depth caller is added. Verified
 locally in the real container, on synthetic metrics with and without
 depth calls. With depth calls, the Depth cutoff rows are still produced.
 
+#### Then `FILTER_ANNOTATE_VCF (manta)` filled the node's `/tmp`
+
+With that fixed, `ADJUDICATE_SV` completed, and `FILTER_ANNOTATE_VCF` passed
+for Wham. Manta failed with exit 255: a run of `[E::bgzf_flush] File write
+failed (wrong size)` errors, then `[buf_flush] Error: close failed ..
+/tmp/bcftools.OIJXOF/00000`. `bcftools sort` spills sorted chunks to
+`$TMPDIR`, or `/tmp` if that's unset. The cohort's Manta sites VCF overflowed
+the compute node's local `/tmp`.
+
+Fix: both `bcftools sort` calls in the module now pass `-T .`, which puts the
+spill directory (`./.XXXXXX`) in the task work dir on shared storage. Checked
+locally in the module's container (bcftools 1.21) with `-m 1M` to force
+spilling: the chunks landed in the work dir, `/tmp` stayed empty, and every
+record came through.
+
 ### `FilterAnnotateVcf`: RF-score sites filtering
 
 `FILTER_ANNOTATE_VCF` module + `filter_batch_sites` subworkflow. Built

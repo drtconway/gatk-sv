@@ -21,6 +21,9 @@
 // modules/local/ploidy_table_from_ped/main.nf's own note on why that
 // mechanism never fires for any workflows/*.nf entry point here.
 //
+// `bcftools sort -T .` spills to the work dir, not the node's /tmp,
+// which a cohort-scale Manta VCF filled.
+//
 process FILTER_ANNOTATE_VCF {
     tag "${meta.id}"
     label 'process_single'
@@ -48,7 +51,7 @@ process FILTER_ANNOTATE_VCF {
         <(sed -e '1d' ${scores} | fgrep -e DEL -e DUP | awk '(\$3!="NA" && \$3>=0.5)' | cut -f1 | fgrep -w -f - <(zcat ${vcf})) \\
         <(sed -e '1d' ${scores} | fgrep -e INV -e BND -e INS | awk '(\$3!="NA" && \$3>=0.5)' | cut -f1 | fgrep -w -f - <(zcat ${vcf}) | sed -e 's/SVTYPE=DEL/SVTYPE=BND/' -e 's/SVTYPE=DUP/SVTYPE=BND/' -e 's/<DEL>/<BND>/' -e 's/<DUP>/<BND>/') \\
         | cat <(sed -n -e '/^#/p' <(zcat ${vcf})) - \\
-        | bcftools sort -Oz -o filtered.vcf.gz
+        | bcftools sort -T . -Oz -o filtered.vcf.gz
 
     python3 <<CODE
 import pysam
@@ -64,7 +67,7 @@ with pysam.VariantFile("filtered.vcf.gz", 'r') as vcf_in, pysam.VariantFile("fil
 CODE
 
     python3 ${rewrite_sr_coords_script} filtered.updated_bnds.vcf.gz ${metrics} ${cutoffs} stdout \\
-        | bcftools sort -Oz -o filtered.corrected_coords.vcf.gz
+        | bcftools sort -T . -Oz -o filtered.corrected_coords.vcf.gz
 
     python3 ${annotate_rf_evidence_script} filtered.corrected_coords.vcf.gz ${scores} ${prefix}.with_evidence.vcf
     bgzip ${prefix}.with_evidence.vcf
