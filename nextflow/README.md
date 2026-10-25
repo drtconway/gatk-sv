@@ -2015,6 +2015,50 @@ locally in the module's container (bcftools 1.21) with `-m 1M` to force
 spilling: the chunks landed in the work dir, `/tmp` stayed empty, and every
 record came through.
 
+#### Then `GATK_TRAINSVGENOTYPING` overwrote its own input
+
+FilterBatchSites then completed. `GATK_TRAINSVGENOTYPING` failed with exit 3,
+`Invalid file pointer ... for cohort.merge_pesr_depth.vcf.gz`, the moment it
+started reading. The input's `meta.id` is `cohort.merge_pesr_depth`, so
+`-O ${prefix}.vcf.gz` named the same file as the staged input. GATK opened
+its output writer through the input symlink and truncated
+`MERGE_PESR_DEPTH_VCFS`'s output in place, leaving its `.tbi` pointing past
+the end. The WDL doesn't hit this because it names the output after the
+batch (`output_name = batch`), not after the input.
+
+Fix: `-O` is now `${prefix}.trained.vcf.gz`. Nothing reads that VCF.
+`--output-name ${prefix}` still names the three `*_geno_params.tsv` tables.
+The upstream merge output was already corrupted in its work dir, and
+`-resume` would reuse it, so that file has to be deleted to force a rerun.
+
+#### Tasks that only succeed on retry
+
+On every resume since Oct 12, the same 21 tasks ran again: Manta for the
+RDN0050 trio, and Wham for 18 samples. Each time, attempt 1 failed (Manta at
+the 24h limit, Wham at 16GB) and the retry succeeded. Because they feed the
+cohort-level steps, everything downstream reran too, at a cost of about two
+days per resume. Their inputs, scripts and completed work dirs were all fine.
+
+The cause is how Nextflow 25.10.2 (`TaskProcessor.checkCachedOrLaunchTask`)
+numbers attempts. Resume walks a chain of hashes, `H1 = f(H, 1)`,
+`H2 = f(H1, 2)`, and so on, skipping every work dir that exists but isn't a
+success, and submits at the first free slot `Hk`. A retry derives its hash
+from the failed attempt's own hash, `f(Hk, 2)`. That only lands back on the
+chain when `k = 1`. So once a task has any earlier failed or aborted attempt
+(here, from sessions killed by `errorStrategy 'terminate'`), a success on
+retry sits off the chain, and every later resume walks past it and starts
+again from attempt 1. `-trace nextflow.processor.TaskProcessor` showed the
+trio's walk at `try=13..34`, visiting only failed first attempts. A three-run
+local reproduction confirmed it: a task whose attempt 1 succeeds is cached on
+the next resume, even at a late slot.
+
+Fix: first attempts now match the largest resources that have succeeded, so
+these tasks don't need a retry. Manta starts at 48h/32GB, Wham at 64GB.
+`time`/`memory` aren't part of the task hash, so this doesn't invalidate
+anything that's already cached (also confirmed locally). The general rule is
+to size first attempts generously. A retry is only a safety net, since its
+result may not survive a resume.
+
 ### `FilterAnnotateVcf`: RF-score sites filtering
 
 `FILTER_ANNOTATE_VCF` module + `filter_batch_sites` subworkflow. Built

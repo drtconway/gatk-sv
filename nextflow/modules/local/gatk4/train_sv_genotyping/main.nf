@@ -11,6 +11,10 @@
 // have this walker at all; confirmed directly, same as
 // AggregateSVEvidence/AggregateDepthEvidence/SVRegionOverlap).
 //
+// `-O` gets its own name: meta.id is the input VCF's basename, so
+// `${prefix}.vcf.gz` would write through the staged input symlink and
+// truncate the upstream file.
+//
 process GATK_TRAINSVGENOTYPING {
     tag "${meta.id}"
     label 'process_single'
@@ -58,7 +62,7 @@ process GATK_TRAINSVGENOTYPING {
         -XL chrX -XL chrY \\
         -V ${vcf} \\
         --training-intervals ${training_intervals} \\
-        -O ${prefix}.vcf.gz \\
+        -O ${prefix}.trained.vcf.gz \\
         --median-coverage ${median_coverage} \\
         --rd-file ${rd_file} \\
         --split-reads-file ${sr_file} \\
