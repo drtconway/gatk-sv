@@ -30,6 +30,7 @@
 // svtk-format-vs-GATK-format round trip.
 //
 
+include { PED_SEXES } from '../../../modules/local/ped_sexes/main'
 include { PLOIDY_TABLE_FROM_PED as PLOIDY_TABLE_FROM_PED_BATCH_METRICS } from '../../../modules/local/ploidy_table_from_ped/main'
 include { CONCAT_VCFS as CONCAT_INPUT_VCFS  } from '../../../modules/local/concat_vcfs/main'
 include { CONCAT_VCFS as CONCAT_OUTPUT_VCFS } from '../../../modules/local/concat_vcfs/main'
@@ -69,7 +70,9 @@ workflow VCFS_GENERATE_BATCH_METRICS {
     // its default false) -- separate from vcfs_combine_batches' own
     // (retain_female_chr_y=true), since these are two different WDL call
     // sites, not the same table reused.
-    PLOIDY_TABLE_FROM_PED_BATCH_METRICS(ped, contig_list.map { meta, c -> c }.collect(), file(ploidy_script))
+    // Sexes only, so pedigree-only PED edits stay cached (see PED_SEXES).
+    PED_SEXES(ped)
+    PLOIDY_TABLE_FROM_PED_BATCH_METRICS(PED_SEXES.out.ped, contig_list.map { meta, c -> c }.collect(), file(ploidy_script))
     ploidy_table = PLOIDY_TABLE_FROM_PED_BATCH_METRICS.out.ploidy_table.map { meta, t -> t }.collect()
 
     // --- Concat all callers' clustered VCFs into one, then scatter into shards ---

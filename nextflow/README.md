@@ -2133,6 +2133,28 @@ anything that's already cached (also confirmed locally). The general rule is
 to size first attempts generously. A retry is only a safety net, since its
 result may not survive a resume.
 
+#### PED edits no longer rerun the cohort
+
+Correcting one parent in the PED (a half-sibling, see
+[Output QC](#output-qc-first-pass-oct-2026)) would have rerun every
+cohort-level step. Nextflow hashes an input file by path, size and mtime;
+every `PLOIDY_TABLE_FROM_PED` task reads the PED, so all of them rerun, and
+every downstream task then sees new ploidy-table paths. Yet the ploidy table
+only depends on each individual's sex.
+
+Fix: `PED_SEXES` reduces the PED to ID and sex (family, parents and
+phenotype zeroed, rows sorted) before each `PLOIDY_TABLE_FROM_PED`, which
+now uses `cache 'deep'` (content hashing). An edit that changes no one's
+sex leaves `PED_SEXES`' output content unchanged, so the ploidy table task
+keeps its hash, work dir and output path, and everything downstream stays
+cached. Checked with `-stub-run` (`PED_SEXES`' stub runs the real command):
+a phenotype change plus row reorder reran only the 4 `PED_SEXES` tasks
+(126 cached); a sex change reran the cohort-level chain (86 tasks) with the
+per-sample callers and evidence still cached. Introducing it changes the
+ploidy tasks' inputs, so it costs one cohort-level rerun, taken together
+with the pedigree correction that prompted it. `VALIDATE_SAMPLESHEET_PED`
+still reads the full PED, so dangling parent IDs are still caught.
+
 ### `FilterAnnotateVcf`: RF-score sites filtering
 
 `FILTER_ANNOTATE_VCF` module + `filter_batch_sites` subworkflow. Built

@@ -31,6 +31,7 @@
 // Aliased: retain_female_chr_y=true is set by process name in
 // conf/modules.config, and stage 1's PLOIDY_TABLE_FROM_PED must not get it.
 include { PLOIDY_TABLE_FROM_PED as PLOIDY_TABLE_FROM_PED_COMBINE_BATCHES } from '../../../modules/local/ploidy_table_from_ped/main'
+include { PED_SEXES } from '../../../modules/local/ped_sexes/main'
 // Aliased: each gets its own overlap thresholds via ext.args, which stage
 // 1's GATK4_SVCLUSTER must not pick up.
 include { GATK4_SVCLUSTER as GATK4_SVCLUSTER_JOIN   } from '../../../modules/nf-core/gatk4/svcluster/main'
@@ -62,7 +63,9 @@ workflow VCFS_COMBINE_BATCHES {
     format_gatk_vcf_for_svtk_script  // val: absolute path to bin/format_gatk_vcf_for_svtk.py
 
     main:
-    PLOIDY_TABLE_FROM_PED_COMBINE_BATCHES(ped, contig_list.map { meta, c -> c }.collect(), file(ploidy_script))
+    // Sexes only, so pedigree-only PED edits stay cached (see PED_SEXES).
+    PED_SEXES(ped)
+    PLOIDY_TABLE_FROM_PED_COMBINE_BATCHES(PED_SEXES.out.ped, contig_list.map { meta, c -> c }.collect(), file(ploidy_script))
     ploidy_table = PLOIDY_TABLE_FROM_PED_COMBINE_BATCHES.out.ploidy_table.map { meta, t -> t }.collect()
 
     fasta_v     = fasta.map { meta, f -> f }.collect()
