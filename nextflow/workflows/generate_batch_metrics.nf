@@ -23,11 +23,11 @@
 //     --outdir results
 //
 // Composes bam_call_manta/bam_call_wham + vcfs_cluster_svcluster (stage 1
-// per-caller clustering, same as combine_batches.nf's own first half) with
+// per-caller clustering, same as cluster_manta.nf/cluster_wham.nf) with
 // bam_collect_evidence + vcfs_merge_evidence + vcfs_merge_read_counts
 // (panel-wide evidence, same as merge_evidence.nf) and the new
 // vcfs_generate_batch_metrics -- same "one entry point runs the full
-// chain" pattern as combine_batches.nf/merge_evidence.nf. Deliberately
+// chain" pattern as merge_evidence.nf. Deliberately
 // does NOT run vcfs_combine_batches: GenerateBatchMetrics takes each
 // caller's stage-1 clustered VCF directly, not CombineBatches' later
 // cross-caller merged output -- confirmed against
@@ -102,7 +102,7 @@ workflow {
     segdups = channel.of([ [id: 'segdups'], file(params.segdups), file(params.segdups_tbi) ])
     rmsk = channel.of([ [id: 'rmsk'], file(params.rmsk), file(params.rmsk_tbi) ])
 
-    // --- Per-caller call + cluster (stage 1), same as combine_batches.nf ---
+    // --- Per-caller call + cluster (stage 1), same as cluster_manta.nf / cluster_wham.nf ---
 
     BAM_CALL_MANTA(samples, fasta, fasta_fai, manta_region_bed, contigs_fai, params.min_svsize)
     VCFS_CLUSTER_SVCLUSTER_MANTA(

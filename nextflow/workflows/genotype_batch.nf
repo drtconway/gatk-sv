@@ -3,7 +3,10 @@
 //
 // Standalone entry point: sample sheet -> genotyped depth/PESR VCFs --
 // the actual goal of the genotyping prerequisite chain (see
-// ../README.md#path-to-genotyping-the-real-prerequisite-chain).
+// ../README.md#path-to-genotyping-the-real-prerequisite-chain) -- then
+// MakeCohortVcf's CombineBatches on them (cross-caller merge). Will be
+// renamed once the rest of MakeCohortVcf is here; until then the name is
+// kept so existing launch commands work.
 //
 // Run directly, e.g.:
 //   nextflow run workflows/genotype_batch.nf -profile apptainer \
@@ -22,6 +25,13 @@
 //     --depth_training_bed train.bed \
 //     --bin_exclude bin_exclude.bed.gz --bin_exclude_tbi bin_exclude.bed.gz.tbi \
 //     --pesr_exclude_list pesr_exclude.bed.gz --pesr_exclude_list_tbi pesr_exclude.bed.gz.tbi \
+//     --clustering_config_part1 clustering_config.part_one.tsv \
+//     --stratification_config_part1 stratify_config.part_one.tsv \
+//     --clustering_config_part2 clustering_config.part_two.tsv \
+//     --stratification_config_part2 stratify_config.part_two.tsv \
+//     --clustering_track_sr hg38.SimpRep.bed \
+//     --clustering_track_sd hg38.SegDup.bed \
+//     --clustering_track_rm hg38.RM.bed \
 //     --outdir results
 //
 // Composes generate_batch_metrics.nf's own full chain (stage-1
@@ -57,6 +67,8 @@ include { VCFS_GENERATE_BATCH_METRICS } from '../subworkflows/local/vcfs_generat
 include { ADJUDICATE_SV               } from '../modules/local/adjudicate_sv/main'
 include { FILTER_BATCH_SITES          } from '../subworkflows/local/filter_batch_sites/main'
 include { GENOTYPE_BATCH              } from '../subworkflows/local/genotype_batch/main'
+include { VCFS_COMBINE_BATCHES        } from '../subworkflows/local/vcfs_combine_batches/main'
+include { BCFTOOLS_FILL_TAGS as BCFTOOLS_FILL_TAGS_COMBINED } from '../modules/local/bcftools_fill_tags/main'
 include { validateParameters          } from 'plugin/nf-schema'
 
 workflow {
@@ -77,7 +89,10 @@ workflow {
         'sd_locs_vcf', 'sd_locs_vcf_idx', 'preprocessed_intervals',
         'segdups', 'segdups_tbi', 'rmsk', 'rmsk_tbi',
         'depth_training_bed', 'bin_exclude', 'bin_exclude_tbi',
-        'pesr_exclude_list', 'pesr_exclude_list_tbi'
+        'pesr_exclude_list', 'pesr_exclude_list_tbi',
+        'clustering_config_part1', 'stratification_config_part1',
+        'clustering_config_part2', 'stratification_config_part2',
+        'clustering_track_sr', 'clustering_track_sd', 'clustering_track_rm'
     ].each { p ->
         if (!params[p]) {
             error "genotype_batch.nf requires --${p}"
@@ -119,7 +134,7 @@ workflow {
     segdups = channel.of([ [id: 'segdups'], file(params.segdups), file(params.segdups_tbi) ])
     rmsk = channel.of([ [id: 'rmsk'], file(params.rmsk), file(params.rmsk_tbi) ])
 
-    // --- Per-caller call + cluster (stage 1), same as combine_batches.nf ---
+    // --- Per-caller call + cluster (stage 1), same as cluster_manta.nf / cluster_wham.nf ---
 
     BAM_CALL_MANTA(samples, fasta, fasta_fai, manta_region_bed, contigs_fai, params.min_svsize)
     VCFS_CLUSTER_SVCLUSTER_MANTA(
@@ -248,4 +263,48 @@ workflow {
 
     GENOTYPE_BATCH.out.genotyped_depth_vcf.view { meta, v, i -> "Genotyped depth VCF: ${v}" }
     GENOTYPE_BATCH.out.genotyped_pesr_vcf.view { meta, v, i -> "Genotyped PESR VCF: ${v}" }
+
+    // --- Cross-caller merge of the genotyped VCFs (MakeCohortVcf's
+    // CombineBatches). Called here at top level, not by wrapping the chain
+    // above in a subworkflow: that would rename every task above and
+    // invalidate -resume. ---
+
+    clustering_config_part1 = channel.of([ [id: 'cc1'], file(params.clustering_config_part1) ])
+    stratification_config_part1 = channel.of([ [id: 'sc1'], file(params.stratification_config_part1) ])
+    clustering_config_part2 = channel.of([ [id: 'cc2'], file(params.clustering_config_part2) ])
+    stratification_config_part2 = channel.of([ [id: 'sc2'], file(params.stratification_config_part2) ])
+    track_bed_files = channel.of([
+        [id: 'tracks'],
+        [
+            file(params.clustering_track_sr),
+            file(params.clustering_track_sd),
+            file(params.clustering_track_rm)
+        ]
+    ])
+
+    // Untagged: CombineBatches can't take AC/AF. They're re-added below.
+    VCFS_COMBINE_BATCHES(
+        GENOTYPE_BATCH.out.genotyped_pesr_vcf_untagged,
+        GENOTYPE_BATCH.out.genotyped_depth_vcf_untagged,
+        ped,
+        contig_list,
+        fasta,
+        fasta_fai,
+        dict,
+        clustering_config_part1,
+        stratification_config_part1,
+        clustering_config_part2,
+        stratification_config_part2,
+        track_bed_files,
+        ['SR', 'SD', 'RM'],
+        'cohort',
+        "${pipelineRoot}/bin/ploidy_table_from_ped.py",
+        "${pipelineRoot}/bin/format_gatk_vcf_for_svtk.py"
+    )
+
+    BCFTOOLS_FILL_TAGS_COMBINED(
+        VCFS_COMBINE_BATCHES.out.combined_vcf.map { meta, v, tbi -> [ [id: 'cohort.combined'], v, tbi ] }
+    )
+
+    BCFTOOLS_FILL_TAGS_COMBINED.out.vcf.view { meta, v, i -> "Combined cohort VCF: ${v}" }
 }

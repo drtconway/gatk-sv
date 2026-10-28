@@ -49,7 +49,7 @@ include { BCFTOOLS_FILL_TAGS as BCFTOOLS_FILL_TAGS_PESR  } from '../../../module
 
 workflow GENOTYPE_BATCH {
     take:
-    vcf                 // channel: [ meta, vcf, vcf_tbi ] -- sites-only VCF, e.g. from vcfs_combine_batches
+    vcf                 // channel: [ meta, vcf, vcf_tbi ] -- sites-only VCF, e.g. filter_batch_sites' merged_vcf
     training_intervals  // channel: [ path ] -- static resource, e.g. params.depth_training_bed (plain BED, not bgzipped -- GATK wants its own .idx, not a tabix .tbi; confirmed empirically, see README)
     median_coverage     // channel: [ meta, median_cov_bed ]
     rd_file             // channel: [ meta, rd_txt_gz, rd_txt_gz_tbi ] -- panel-wide, from vcfs_merge_read_counts
@@ -192,6 +192,10 @@ workflow GENOTYPE_BATCH {
     emit:
     genotyped_depth_vcf = BCFTOOLS_FILL_TAGS_DEPTH.out.vcf
     genotyped_pesr_vcf = BCFTOOLS_FILL_TAGS_PESR.out.vcf
+    // As upstream's GenotypeBatch writes them, for CombineBatches (which
+    // can't take AC/AF).
+    genotyped_depth_vcf_untagged = SEPARATE_DEPTH_PESR.out.depth_vcf
+    genotyped_pesr_vcf_untagged = SEPARATE_DEPTH_PESR.out.pesr_vcf
     genotyping_rd_table = GATK_TRAINSVGENOTYPING.out.rd_table
     genotyping_pe_table = GATK_TRAINSVGENOTYPING.out.pe_table
     genotyping_sr_table = GATK_TRAINSVGENOTYPING.out.sr_table

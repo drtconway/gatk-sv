@@ -234,7 +234,7 @@ SINGLETON01 SAMPLE_C       0            0            2    1
 - One pedigree file per project, matching the panel being per-project.
 
 **Every entry point that consumes the PED file** (`cluster_manta.nf`,
-`cluster_wham.nf`, `combine_batches.nf`, `generate_batch_metrics.nf`,
+`cluster_wham.nf`, `generate_batch_metrics.nf`,
 `genotype_batch.nf`) cross-checks it against the sample sheet up front,
 via `subworkflows/local/validate_samplesheet_ped`, and fails immediately
 — before any real work starts — if they disagree: a sample sheet row
@@ -424,7 +424,7 @@ nextflow/
 │       ├── counts_call_gcnv_case/     # gCNV scoring against a panel model, genotype-new-sample only
 │       ├── counts_call_cnmops/
 │       ├── vcfs_cluster_svcluster/    # SVCluster, used both within-panel and panel+case (harmonisation stage 1)
-│       ├── vcfs_combine_batches/      # cross-caller merge (harmonisation stage 2)
+│       ├── vcfs_combine_batches/      # cross-caller merge of the genotyped VCFs (CombineBatches)
 │       ├── vcf_genotype/              # apply cutoffs -> genotyped VCF
 │       ├── vcf_annotate_svannotate/
 │       └── panel_bundle_io/           # read/write the versioned panel bundle (see Panel bundle contents)
@@ -437,7 +437,6 @@ nextflow/
     ├── call_all.nf                # standalone entry: sample sheet -> VCFs from every implemented caller
     ├── cluster_manta.nf           # standalone entry: sample sheet -> clustered Manta site VCF (harmonisation stage 1)
     ├── cluster_wham.nf            # standalone entry: sample sheet -> clustered Wham site VCF (harmonisation stage 1)
-    ├── combine_batches.nf         # standalone entry: sample sheet -> cross-caller merged site VCF (harmonisation stage 2)
     ├── build_panel.nf             # full build-panel pipeline
     └── genotype_new_sample.nf     # full genotype-new-sample pipeline
 ```
@@ -767,7 +766,7 @@ for two PESR callers and no depth caller. Neither tier of the
 | FilterBatch: FilterBatchSamples (outliers) | — | Not started |
 | GenotypeBatch | `genotype_batch` (+ AN/AC/AF) | Done; real cohort |
 | RegenotypeCNVs | — | Not started (needs depth calls) |
-| MakeCohortVcf: CombineBatches | `vcfs_combine_batches` | Built, but before genotyping, not after; see [stage 2](#harmonisation-stage-2-cross-caller-merge) |
+| MakeCohortVcf: CombineBatches | `vcfs_combine_batches` | Built on the genotyped VCFs, as upstream; not yet run on the cohort |
 | MakeCohortVcf: ResolveComplex, GenotypeComplex, CleanVcf | — | Not started |
 | AnnotateVcf | — | Not started |
 
@@ -775,11 +774,17 @@ What the output is, as of now:
 
 - `<cohort>.genotyped.pesr.vcf.gz` is the real result: Manta + Wham
   calls, RF-filtered and genotyped across the cohort.
+  Manta and Wham calls of the same variant are still separate records.
 - `<cohort>.genotyped.depth.vcf.gz` is expected to be empty. It holds only
   `ALGORITHMS=depth` records, and there is no depth caller yet.
+- `combine_batches/cohort.combined.vcf.gz` (new, not yet run on the
+  cohort): the two above merged, with cross-caller duplicates clustered
+  into one record. Its GTs are all diploid, as upstream's svtk formatting
+  writes them, so chrX/chrY AN/AF count males as diploid until `CleanVcf`.
 - Not yet a cohort VCF in upstream's sense: no complex-SV resolution, no
   `CleanVcf` (sex-chromosome genotypes, multiallelic CNVs, overlaps), no
-  outlier-sample filtering, no functional annotation.
+  genotype filtering, no outlier-sample filtering, no functional
+  annotation.
 
 The plan from here is under [Not yet started](#not-yet-started). The rest
 of this section is the build log, in roughly the order things were built.
@@ -1185,27 +1190,44 @@ work restarts from scratch on the next `-resume`.
 
 ### Harmonisation stage 2: cross-caller merge
 
-`subworkflows/local/vcfs_combine_batches` and its standalone entry point
-`workflows/combine_batches.nf` implement stage 2 of harmonisation:
-merging multiple callers' already-clustered site VCFs (Manta's and
-Wham's, from stage 1) into one cross-caller site list. Mirrors GATK-SV's
-`CombineBatches` workflow (`wdl/CombineBatches.wdl`). `combine_batches.nf`
-composes the full pipeline in one entry point — sample sheet in, one
-merged VCF out — running `BAM_CALL_MANTA`/`BAM_CALL_WHAM` and both
-callers' `VCFS_CLUSTER_SVCLUSTER` calls itself, same pattern as
-`call_all.nf`.
+`subworkflows/local/vcfs_combine_batches` merges `genotype_batch`'s
+genotyped PESR and depth VCFs into one cohort VCF. After genotyping, the
+same variant called by Manta and by Wham is still two records (filtering
+runs per caller and `MergePesrDepthVcfs` only concatenates); this step
+clusters them into one. Mirrors GATK-SV's `CombineBatches`
+(`wdl/CombineBatches.wdl`), the first step of `MakeCohortVcf`
+(`wdl/MakeCohortVcf.wdl:203`), on the same inputs as upstream. Run by
+`workflows/genotype_batch.nf` after genotyping, and published as
+`${outdir}/combine_batches/cohort.combined.vcf.gz` with AN/AC/AF added
+(`BCFTOOLS_FILL_TAGS_COMBINED`).
 
 Steps, matching `CombineBatches`:
 
-1. Naive join across callers (`GATK4_SVCLUSTER_JOIN`, near-zero overlap
-   thresholds — only merges exact-position duplicates).
+1. Naive join of the PESR and depth VCFs (`GATK4_SVCLUSTER_JOIN`,
+   near-zero overlap thresholds — only merges exact-position duplicates).
 2. Real clustering pass (`GATK4_SVCLUSTER_SITES`, realistic overlap
    thresholds, plus a `--variant-prefix` keyed by `cohort_name`).
 3. Two rounds of context-aware re-clustering
    (`GATK4_GROUPEDSVCLUSTER_PART1`/`PART2`, wraps GATK's `GroupedSVCluster`
    walker — see below), stratified by genomic context tracks (simple
-   repeats, segmental duplications, RepeatMasker).
-4. Format back to svtk (`FORMAT_GATK_VCF_FOR_SVTK`, reused from stage 1).
+   repeats, segmental duplications, RepeatMasker), with the WDL task's
+   `--stratify-*` values.
+4. `EXTRACT_SR_VARIANT_LISTS`: the `HIGH_SR_BACKGROUND` and
+   `BOTHSIDES_SUPPORT` variant ID lists, which `ResolveComplexVariants`
+   and `CleanVcf` take as inputs.
+5. Format to svtk (`FORMAT_GATK_VCF_FOR_SVTK_COMBINE_BATCHES`: source
+   `depth`, `--set-pass`, dropping `AC`/`AF`/`AN`, the SR flags and
+   `SR1POS`/`SR2POS`, as upstream).
+
+The genotyped VCFs fed in are the untagged ones (`SeparateDepthPesr`'s
+output, as upstream), not the AN/AC/AF copies: upstream drops `AC`/`AF`
+before formatting because they can't be lists.
+
+**History.** This subworkflow was first built on stage 1's clustered sites,
+before genotyping existed, with a `combine_batches.nf` entry point. That
+needed a step 0 (re-adding `ECN`, see below) and wasn't upstream's
+placement. It now takes the genotyped VCFs, which are already GATK format,
+so step 0 and `combine_batches.nf` are gone.
 
 This subworkflow builds its *own* ploidy table
 (`PLOIDY_TABLE_FROM_PED_COMBINE_BATCHES`, aliased — see below), with
@@ -1218,14 +1240,12 @@ supports — it's WDL-task-level post-processing
 females only affects chrY) that our `PLOIDY_TABLE_FROM_PED` module now
 supports via `task.ext.retain_female_chr_y`.
 
-**Placement differs from upstream.** Upstream runs `CombineBatches` after
-genotyping, as the first step of `MakeCohortVcf`
-(`wdl/MakeCohortVcf.wdl:203`), on `GenotypeBatch`'s genotyped PESR and
-depth VCFs. Here it runs on stage 1's clustered sites, before genotyping,
-and `genotype_batch.nf` doesn't use it at all: the genotyping chain's
-cross-caller merge is `FilterBatchSites`' `MergePesrDepthVcfs` concat, as
-upstream. The walkers and arguments are right; the inputs need moving to
-`genotype_batch`'s outputs when `MakeCohortVcf` is built.
+It runs as top-level calls in `genotype_batch.nf`'s entry workflow, not by
+wrapping the chain before it in a subworkflow. Nextflow's task hash
+includes the fully qualified process name, so wrapping would rename every
+task and invalidate `-resume` (confirmed locally: the same process moved
+into a named workflow reruns, while the same code in a different entry
+file stays cached).
 
 #### A real bug: the ploidy table's own output glob matched its intermediate file too
 
@@ -1259,6 +1279,9 @@ sites exercise, since a glob collision that's specific to one branch is
 easy to miss when validating with the default/most-common configuration.
 
 #### A real bug: `ECN` missing because our stage 1 round-trips through svtk format, GATK-SV's doesn't
+
+(Superseded: the subworkflow now takes the genotyped VCFs, which carry
+`ECN`, so step 0 below has been removed. Kept for the lesson.)
 
 A real HPC run of `combine_batches.nf` got past the ploidy-table fix above
 and failed one step later, in `GATK4_SVCLUSTER_SITES`, with `SVCluster`'s
@@ -1313,15 +1336,15 @@ publish step stripped anything the consumer's GATK tools need back — the
 producer and consumer being individually correct doesn't mean the round
 trip between them is lossless.
 
-Deliberately not implemented: GATK-SV's cross-*batch* SR evidence flag
-reconciliation (`ExtractSRVariantLists`/`CombineSRBothsidePass`/
-`SetSRVariantFlags`) is skipped — it exists to combine
-`BOTHSIDES_SUPPORT`/`HIGH_SR_BACKGROUND` flags across multiple *batches*
-of the same caller category (GATK-SV's own cohort-mode "batch" concept),
-which has no analog here: we have one VCF per *caller*, not per *batch*,
-and this pipeline doesn't have a first-class batch concept at all (see
-[Where to simplify](#where-to-simplify-relative-to-upstream-gatk-sv)).
-Also not scattered by contig — same simplification as stage 1.
+Deliberately not implemented: GATK-SV's cross-*batch* SR flag
+reconciliation (`CombineSRBothsidePass`, `CombineBackgroundFail`,
+`SetSRVariantFlags`), which combines `BOTHSIDES_SUPPORT`/
+`HIGH_SR_BACKGROUND` across batches. There is one batch here, where it is
+close to an identity: the background-fail list is unchanged, and
+`BOTHSIDES_SUPPORT` is only dropped from variants with no non-ref genotype,
+which `CleanVcf` removes anyway. (`ExtractSRVariantLists` on the output
+*is* implemented, step 4.) Also not scattered by contig — same
+simplification as stage 1.
 
 #### A new GATK subcommand, no nf-core module
 
@@ -2228,27 +2251,60 @@ doesn't yet show the genotypes are good. Output QC (per-sample counts,
 trio Mendelian consistency) is the next step; see
 [Not yet started](#not-yet-started).
 
+### Output QC: first pass (Oct 2026)
+
+`scripts/qc_genotyped_vcf.sh` on `cohort.genotyped.pesr.vcf.gz` (440
+samples, 81,833 sites, 144 trios):
+
+- **Per-sample counts are tight**: about 5,600 DEL, 1,600 DUP, 1,800 INS
+  and 1,800 BND per sample, with no sample outside upstream's 6×IQR
+  cutoffs. INS has nothing over 1 kb (no MEI caller); BND is high
+  (unconverted inversions, no complex resolution).
+- **No site has `ALGORITHMS=manta,wham`**: cross-caller duplicates aren't
+  merged until `CombineBatches`, which inflates per-sample counts.
+- **Trios** (pooled, autosomes): 13.7% Mendelian-inconsistent, 4.1%
+  apparent de novo, 45.2% transmission from a het parent. Real de novo SVs
+  are well under one per genome, so the ~600 per child are errors.
+- **Errors concentrate by RF evidence and frequency**: PE-only sites
+  (11.5% de novo, 38% transmission) and SR-only sites together hold ~78%
+  of de novos; sites with BAF+PE+RD+SR support are near ideal (1.4%,
+  49.9%). AF 1–5% sites transmit at 35%. Also DEL 500 bp–1 kb, DUP over
+  5 kb and BND.
+- **A GQ threshold doesn't fix it**: GQ is 0–99. GQ ≥ 50 cuts de novos
+  from 4.1% to 2.4% but leaves inconsistency at ~13% and loses a third of
+  child non-ref calls. Dropping GQ=0 alone removes a third of de novos (most
+  of them BND) for 7% of calls. Most non-de-novo inconsistency, and the 56%
+  transmission at AF ≥ 50% sites, look like hom-ref calls in carriers.
+- **One pedigree error found**: RDN0249-03 (25.5% inconsistent, 36%
+  transmission) is a half-sibling, now corrected in the PED. Some children
+  (RDN0355-00, RDN0262-00, RDN0263-00) have excess de novos with normal
+  transmission: a child-sample effect, not the pedigree.
+
+Upstream's answer to genotype noise is `RecalibrateGq` + `FilterGenotypes`
+on the cleaned VCF, with published pretrained models
+(`aou_recalibrate_gq_model_file`, `hgsvc_release3_gq_model_file`) and
+`baseline_sl_cutoffs.tsv`; the fallback is gnomAD-SV v2-style per-stratum
+minimum-GQ tables trained on these trios.
+
 ### Not yet started
 
 Planned order:
 
-1. **Output QC on the real run.** Per-sample call counts by SVTYPE (to
-   spot outliers), size distribution, Mendelian consistency on the trios,
-   and concordance with GATK-SV if any of these samples has been through
-   it. Cheap, and decides whether the rest is worth building on.
-   `scripts/qc_genotyped_vcf.sh` does all but the concordance (usage in its
-   header).
+1. ~~**Output QC on the real run.**~~ Done; see [above](#output-qc-first-pass-oct-2026).
+   Rerun after each stage below to compare.
 2. **A depth caller**: cn.MOPS (local module, no nf-core equivalent)
    and/or the gCNV chain, then `MergeDepth` and `ClusterDepth`. The biggest
    sensitivity gap (large CNVs), and it removes `ADJUDICATE_SV`'s
    no-depth-caller fallback. gCNV is the bigger job, but its model is part
    of the panel bundle. Unlocks `RegenotypeCNVs`, which is what
    `GenerateRegenoCoverageMedians`' output is for.
-3. **`MakeCohortVcf`**: `CombineBatches` moved to after genotyping (see
-   [stage 2](#harmonisation-stage-2-cross-caller-merge)), then
+3. **`MakeCohortVcf`**, now in progress, ahead of step 2: `CombineBatches`
+   (built, see [stage 2](#harmonisation-stage-2-cross-caller-merge)), then
    `ResolveComplexVariants`, `GenotypeComplexVariants`, `CleanVcf`. This
-   is what makes the output clean to import into seqR, so it may be worth
-   doing before step 2.
+   is what makes the output clean to import into seqR, and the input
+   upstream's genotype filtering expects.
+   Then **genotype filtering** (`RecalibrateGq` + `FilterGenotypes`, see
+   the QC section above).
 4. **`FilterBatchSamples`** (outlier-sample removal, `wdl/FilterBatch.wdl:79`).
    `PlotSVCountsPerSample` stays unbuilt: only plots.
 5. **`SVAnnotate`.**

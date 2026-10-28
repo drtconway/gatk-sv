@@ -15,7 +15,7 @@
 //
 // Composes bam_collect_evidence (per-sample) with vcfs_merge_evidence +
 // vcfs_merge_read_counts (panel-wide) -- same "one entry point runs the
-// full chain" pattern as combine_batches.nf. This is the last unbuilt
+// full chain" pattern as generate_batch_metrics.nf. This is the last unbuilt
 // prerequisite for genotyping (TrainSVGenotyping/GenotypeSVs, not yet
 // implemented) -- see README.md#status for the full reasoning chain.
 //

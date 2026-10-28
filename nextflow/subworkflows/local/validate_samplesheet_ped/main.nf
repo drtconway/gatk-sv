@@ -18,9 +18,9 @@
 //
 // Not every workflows/*.nf entry point needs this: only those that
 // actually consume the PED file downstream (cluster_manta.nf,
-// cluster_wham.nf, combine_batches.nf, generate_batch_metrics.nf,
+// cluster_wham.nf, generate_batch_metrics.nf,
 // genotype_batch.nf) -- so this is a separate subworkflow from
-// utils_input_channels (used by all ten entry points, including PED-free
+// utils_input_channels (used by every entry point, including PED-free
 // ones like call_manta.nf), called once, right after it.
 //
 
