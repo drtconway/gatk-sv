@@ -2115,6 +2115,11 @@ shards back → `SeparateDepthPesr` (split by `INFO/ALGORITHMS`) →
 `extract_format_table.py` — for `RegenotypeCNVs`, itself not built here,
 kept only for output parity with upstream).
 
+Beyond upstream: the depth and PESR VCFs then get `INFO/AN`, `AC` and
+`AF` from `bcftools +fill-tags` (`BCFTOOLS_FILL_TAGS`; counts come from
+GTs, so haploid GTs count one allele). They are published as
+`${outdir}/genotype_batch/<cohort>.genotyped.{depth,pesr}.vcf.gz` (+ `.tbi`).
+
 Five new modules: `GATK_TRAINSVGENOTYPING`, `GATK_GENOTYPESVS`, a new
 `GATK_PRINT_SV_EVIDENCE_CONTIG` (distinct from the existing
 `GATK_PRINT_SV_EVIDENCE`: that one merges *multiple per-sample* files

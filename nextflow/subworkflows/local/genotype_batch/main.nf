@@ -12,6 +12,8 @@
 // contig shards back -> SeparateDepthPesr (split by INFO/ALGORITHMS) ->
 // GenerateRegenoCoverageMedians (RD_MCR extraction, for RegenotypeCNVs --
 // not yet built here, kept for parity with upstream's own output set).
+// The depth and PESR VCFs then get AN/AC/AF (bcftools +fill-tags) and
+// are published to ${outdir}/genotype_batch.
 //
 // PrintSVEvidence's own per-contig output filenames must literally end
 // in ".rd.txt.gz"/".pe.txt.gz"/".sr.txt.gz" (case-insensitive, but some
@@ -42,6 +44,8 @@ include { GATK_GENOTYPESVS } from '../../../modules/local/gatk4/genotype_svs/mai
 include { CONCAT_VCFS as CONCAT_GENOTYPE_BATCH_SHARDS } from '../../../modules/local/concat_vcfs/main'
 include { SEPARATE_DEPTH_PESR } from '../../../modules/local/separate_depth_pesr/main'
 include { GENERATE_REGENO_COVERAGE_MEDIANS } from '../../../modules/local/generate_regeno_coverage_medians/main'
+include { BCFTOOLS_FILL_TAGS as BCFTOOLS_FILL_TAGS_DEPTH } from '../../../modules/local/bcftools_fill_tags/main'
+include { BCFTOOLS_FILL_TAGS as BCFTOOLS_FILL_TAGS_PESR  } from '../../../modules/local/bcftools_fill_tags/main'
 
 workflow GENOTYPE_BATCH {
     take:
@@ -174,9 +178,20 @@ workflow GENOTYPE_BATCH {
         file(extract_format_table_script)
     )
 
+    // AN/AC/AF for the published VCFs only (not in GATK-SV). Regeno
+    // medians above keep the untagged depth VCF. The ids differ from the
+    // inputs' basenames (*.genotype_batch.{depth,pesr}) so the outputs
+    // don't overwrite them.
+    BCFTOOLS_FILL_TAGS_DEPTH(
+        SEPARATE_DEPTH_PESR.out.depth_vcf.map { meta, v, tbi -> [ [id: "${cohort_name}.genotyped.depth"], v, tbi ] }
+    )
+    BCFTOOLS_FILL_TAGS_PESR(
+        SEPARATE_DEPTH_PESR.out.pesr_vcf.map { meta, v, tbi -> [ [id: "${cohort_name}.genotyped.pesr"], v, tbi ] }
+    )
+
     emit:
-    genotyped_depth_vcf = SEPARATE_DEPTH_PESR.out.depth_vcf
-    genotyped_pesr_vcf = SEPARATE_DEPTH_PESR.out.pesr_vcf
+    genotyped_depth_vcf = BCFTOOLS_FILL_TAGS_DEPTH.out.vcf
+    genotyped_pesr_vcf = BCFTOOLS_FILL_TAGS_PESR.out.vcf
     genotyping_rd_table = GATK_TRAINSVGENOTYPING.out.rd_table
     genotyping_pe_table = GATK_TRAINSVGENOTYPING.out.pe_table
     genotyping_sr_table = GATK_TRAINSVGENOTYPING.out.sr_table
