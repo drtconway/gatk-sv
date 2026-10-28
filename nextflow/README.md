@@ -2,8 +2,8 @@
 
 This directory holds a from-scratch Nextflow reimplementation of the parts of
 [GATK-SV](../README.md) we actually need, rather than a line-by-line port of
-the WDL. This document is the design plan; implementation is tracked
-separately.
+the WDL. This document is the design plan, plus a [status](#status)
+section: where things stand, what's next, and a log of real-run bugs.
 
 ## Why not port the WDL directly
 
@@ -745,6 +745,47 @@ config files, not in pipeline code.
 
 ## Status
 
+### At a glance (Oct 2026)
+
+`workflows/genotype_batch.nf` runs end to end on a real ~480-sample cohort
+(HPC, Slurm + Apptainer): BAMs in, genotyped VCFs with AN/AC/AF out. In
+upstream terms it covers `GatherSampleEvidence` through `GenotypeBatch`,
+for two PESR callers and no depth caller. Neither tier of the
+[two-tier design](#design-panel-based-two-tier-pipeline) exists yet.
+
+| Upstream stage | Here | State |
+|---|---|---|
+| GatherSampleEvidence: Manta, Wham | `bam_call_manta`, `bam_call_wham` | Done; real cohort |
+| GatherSampleEvidence: Scramble | — | Not started |
+| GatherSampleEvidence: PE/SR/SD/counts | `bam_collect_evidence` | Done; real cohort |
+| EvidenceQC | — | Not started |
+| GatherBatchEvidence: merging, median coverage | `vcfs_merge_evidence`, `vcfs_merge_read_counts`, `MEDIAN_COVERAGE` | Done; real cohort |
+| GatherBatchEvidence: cn.MOPS, gCNV, MergeDepth | — | Not started |
+| ClusterBatch | `vcfs_cluster_svcluster` (per caller) | Done for Manta/Wham; no ClusterDepth |
+| GenerateBatchMetrics | `vcfs_generate_batch_metrics` | Done; real cohort |
+| FilterBatch: FilterBatchSites | `ADJUDICATE_SV`, `filter_batch_sites` | Done; real cohort, with a no-depth-caller fallback |
+| FilterBatch: FilterBatchSamples (outliers) | — | Not started |
+| GenotypeBatch | `genotype_batch` (+ AN/AC/AF) | Done; real cohort |
+| RegenotypeCNVs | — | Not started (needs depth calls) |
+| MakeCohortVcf: CombineBatches | `vcfs_combine_batches` | Built, but before genotyping, not after; see [stage 2](#harmonisation-stage-2-cross-caller-merge) |
+| MakeCohortVcf: ResolveComplex, GenotypeComplex, CleanVcf | — | Not started |
+| AnnotateVcf | — | Not started |
+
+What the output is, as of now:
+
+- `<cohort>.genotyped.pesr.vcf.gz` is the real result: Manta + Wham
+  calls, RF-filtered and genotyped across the cohort.
+- `<cohort>.genotyped.depth.vcf.gz` is expected to be empty. It holds only
+  `ALGORITHMS=depth` records, and there is no depth caller yet.
+- Not yet a cohort VCF in upstream's sense: no complex-SV resolution, no
+  `CleanVcf` (sex-chromosome genotypes, multiallelic CNVs, overlaps), no
+  outlier-sample filtering, no functional annotation.
+
+The plan from here is under [Not yet started](#not-yet-started). The rest
+of this section is the build log, in roughly the order things were built.
+
+### Callers and standardisation
+
 Implemented and validated via `-stub-run` against a mixed BAM/CRAM sample
 sheet (see `tests/data/samplesheet.tsv`):
 
@@ -769,7 +810,8 @@ sheet (see `tests/data/samplesheet.tsv`):
     over an `include_bed_file` region whitelist and concatenates, to bound
     runtime and avoid regions Wham struggles with. We currently run
     `whamg` genome-wide in one shot instead. Revisit if runtime on real
-    data warrants it.
+    data warrants it. It now does: genome-wide, some samples need 64GB,
+    against the WDL's ~5GB per shard. Changing it reruns every Wham task.
 - `SVTK_STANDARDIZE` (`modules/local/svtk_standardize`), used by both
   `bam_call_manta` and `bam_call_wham` — wraps GATK-SV's own `svtk
   standardize` (`src/svtk/`, their `StandardizeVCFs` task,
@@ -1175,6 +1217,15 @@ supports — it's WDL-task-level post-processing
 `sed -e 's/\t0/\t1/g'`, rewriting every `0` ploidy value to `1`, which for
 females only affects chrY) that our `PLOIDY_TABLE_FROM_PED` module now
 supports via `task.ext.retain_female_chr_y`.
+
+**Placement differs from upstream.** Upstream runs `CombineBatches` after
+genotyping, as the first step of `MakeCohortVcf`
+(`wdl/MakeCohortVcf.wdl:203`), on `GenotypeBatch`'s genotyped PESR and
+depth VCFs. Here it runs on stage 1's clustered sites, before genotyping,
+and `genotype_batch.nf` doesn't use it at all: the genotyping chain's
+cross-caller merge is `FilterBatchSites`' `MergePesrDepthVcfs` concat, as
+upstream. The walkers and arguments are right; the inputs need moving to
+`genotype_batch`'s outputs when `MakeCohortVcf` is built.
 
 #### A real bug: the ploidy table's own output glob matched its intermediate file too
 
@@ -2160,52 +2211,61 @@ before: neither exists in `gatk4-main_gcnvkernel`).
   `conf/modules.config` sets `ext.prefix = { "${meta.id}.rd" }` (etc.) for
   each of the three `GATK_PRINT_SV_EVIDENCE_CONTIG` aliases accordingly.
 
-#### An honest limitation: `TrainSVGenotyping`'s PE/SR evidence pass was never exercised to full completion with real data
+#### `TrainSVGenotyping`'s PE/SR pass: confirmed on real data
 
-`TrainSVGenotyping`'s RD/depth training pass succeeded for real
-("Training on 1 CNV sites", "Training completed") against a genuine
-synthetic VCF + median-coverage + RD evidence file, confirming the
-module's own invocation (every flag, the `PEQ`/`SRQ` extraction from
-`rf_cutoffs`, file staging) is correct. Its PE evidence pass, however,
-consistently failed with `IllegalStateException: No discordant pair
-counts after first pass` (`DiscordantPairEvidenceGenotyper
-.finalizeFirstPass`) against every synthetic PE evidence file tried —
-including a two-sample, four-discordant-pair file, and regardless of
-whether the sites VCF had any PESR-typed (non-depth) variant at all. Not
-traced to a specific root cause (unlike the `AdjudicateSV` FDR-cutoff
-case, which was tracked down and understood) — likely some internal
-minimum this walker wants that a hand-built, few-record synthetic PE file
-doesn't reach, but this was **not confirmed**, and is left as a real,
-open gap rather than papered over. Consequence: `GATK_GENOTYPESVS`'s own
-invocation was validated with real data only up to the point it consumes
-RD/PE/SR cutoff tables (a clean, precisely-located `rd_table.tsv`-format
-error when fed an empty placeholder table) — never with a real,
-successfully-trained table, since `TrainSVGenotyping` itself never fully
-succeeded end-to-end with synthetic data. The full chain (all 116
-processes, `TrainSVGenotyping` through `GenerateRegenoCoverageMedians`)
-**is** confirmed correct via `-stub-run`, and every module's own
-real-data invocation up to this specific evidence-volume wall is
-independently confirmed correct — but a real, successful, non-stub
-`TrainSVGenotyping`+`GenotypeSVs` pass together, with genuine PE/SR
-evidence, remains unverified. **Test this for real against actual HPC
-data** before trusting this path blindly, same caution this README
-already gives every other real-vs-stub gap.
+Locally, only the RD training pass could be exercised. On every synthetic
+PE file tried, the PE pass failed with `IllegalStateException: No
+discordant pair counts after first pass`
+(`DiscordantPairEvidenceGenotyper.finalizeFirstPass`), so `GenotypeSVs`
+was never run with a real trained table. The cause was never pinned down;
+most likely the synthetic files were too small for the walker.
+
+The ~480-sample HPC run (Oct 2026) settled it. `TrainSVGenotyping`
+completed all three passes on real evidence, and `GenotypeSVs`, the shard
+concat, `SeparateDepthPesr`, `GenerateRegenoCoverageMedians` and
+`BCFTOOLS_FILL_TAGS` all ran to completion. That shows the chain runs; it
+doesn't yet show the genotypes are good. Output QC (per-sample counts,
+trio Mendelian consistency) is the next step; see
+[Not yet started](#not-yet-started).
 
 ### Not yet started
 
-Scramble (needs coverage counts + Manta's VCF as additional inputs, not
-just the BAM — more involved than Wham), cn.MOPS (needs a local module, no
-nf-core equivalent), the gCNV chain, `MergeBatchSites` (GATK-SV's own
-site-list-only shortcut for cohorts that skip GATK-gCNV — not
-implemented; `CombineBatches`, above, is), `SVAnnotate`, panel bundle I/O,
-`RegenotypeCNVs` (depth-call re-genotyping QC; `GenotypeBatch`'s own
-`GenerateRegenoCoverageMedians` output exists only for this, unconsumed
-for now), and the full `build_panel.nf` / `genotype_new_sample.nf`
-compositions. The whole genotyping prerequisite chain
-(`GenerateBatchMetrics` → `FilterBatchSites`/`AdjudicateSV` →
-`GenotypeBatch`) is now built — see [Path to
-genotyping](#path-to-genotyping-the-real-prerequisite-chain) above for
-the one open real-data validation gap (`TrainSVGenotyping`'s PE evidence
-pass, see `GenotypeBatch`'s own section). `FilterBatchSites.wdl`'s
-`PlotSVCountsPerSample` (outlier-sample QC plotting) remains deliberately
-unbuilt — genuinely not needed by anything downstream.
+Planned order:
+
+1. **Output QC on the real run.** Per-sample call counts by SVTYPE (to
+   spot outliers), size distribution, Mendelian consistency on the trios,
+   and concordance with GATK-SV if any of these samples has been through
+   it. Cheap, and decides whether the rest is worth building on.
+   `scripts/qc_genotyped_vcf.sh` does all but the concordance (usage in its
+   header).
+2. **A depth caller**: cn.MOPS (local module, no nf-core equivalent)
+   and/or the gCNV chain, then `MergeDepth` and `ClusterDepth`. The biggest
+   sensitivity gap (large CNVs), and it removes `ADJUDICATE_SV`'s
+   no-depth-caller fallback. gCNV is the bigger job, but its model is part
+   of the panel bundle. Unlocks `RegenotypeCNVs`, which is what
+   `GenerateRegenoCoverageMedians`' output is for.
+3. **`MakeCohortVcf`**: `CombineBatches` moved to after genotyping (see
+   [stage 2](#harmonisation-stage-2-cross-caller-merge)), then
+   `ResolveComplexVariants`, `GenotypeComplexVariants`, `CleanVcf`. This
+   is what makes the output clean to import into seqR, so it may be worth
+   doing before step 2.
+4. **`FilterBatchSamples`** (outlier-sample removal, `wdl/FilterBatch.wdl:79`).
+   `PlotSVCountsPerSample` stays unbuilt: only plots.
+5. **`SVAnnotate`.**
+6. **The two-tier design**: define and publish the panel bundle from what
+   is effectively `build_panel.nf` (today's `genotype_batch.nf` plus the
+   above), then `genotype_new_sample.nf`.
+
+Also not started: Scramble (needs coverage counts and Manta's VCF, not
+just the BAM), `EvidenceQC`, `MergeBatchSites` (upstream's shortcut for
+cohorts without gCNV).
+
+Known loose ends in what is built:
+
+- `ADJUDICATE_SV`'s no-depth-caller fallback lets PESR calls ≥5 kb pass
+  on RD alone (see [above](#at-cohort-scale-480-samples-adjudicate_sv-crashed-on-the-missing-depth-caller)).
+- Wham runs genome-wide, not over GATK-SV's include list (see Callers).
+- Manta's `convertInversion.py` step is skipped; matters once complex
+  resolution is built.
+- `CollectSVEvidence` isn't restricted with `-L primary_contigs_list`, as
+  upstream does.
