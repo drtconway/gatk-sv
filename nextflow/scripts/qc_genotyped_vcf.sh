@@ -4,8 +4,8 @@
 # <cohort>.genotyped.pesr.vcf.gz): site counts, sizes and frequencies by
 # SVTYPE; per-sample counts with upstream's IQR outlier rule; and, for
 # every complete trio in the PED, Mendelian consistency, de novo rate and
-# transmission rate on autosomes.
-#
+# transmission rate on autosomes, per trio and then pooled by SVTYPE, size,
+# AF, caller and RF evidence, plus a GQ-filter sweep (trio_strata.tsv).
 # Usage:
 #   scripts/qc_genotyped_vcf.sh <vcf> <ped> <outdir> [n_iqr]
 #
@@ -167,31 +167,35 @@ awk -F '[\t ]+' -v samples="$out/samples.txt" '
     ($2 in in_vcf) && ($3 in in_vcf) && ($4 in in_vcf) { print $2 "\t" $3 "\t" $4 }
 ' "$ped" > "$out/trios.txt"
 
+# Shared by both trio passes. Autosomes only: chrX/chrY need sex-aware
+# rules. GTs are reduced to alt-allele dosage (0/1/2); anything else
+# (no-call, haploid, multiallelic CN) counts as missing.
+trio_awk_lib='
+    function dose(g) {
+        if (g == "0/0" || g == "0|0") return 0
+        if (g == "0/1" || g == "1/0" || g == "0|1" || g == "1|0") return 1
+        if (g == "1/1" || g == "1|1") return 2
+        return -1
+    }
+    # Can child dosage c come from one allele of f and one of m?
+    function ok(c, f, m,   a, b) {
+        for (a = (f == 2); a <= (f > 0); a++)
+            for (b = (m == 2); b <= (m > 0); b++)
+                if (a + b == c) return 1
+        return 0
+    }
+    function read_trios(file,   line, p) {
+        while ((getline line < file) > 0) { split(line, p, "\t"); nt++; C[nt] = p[1]; F[nt] = p[2]; M[nt] = p[3] }
+    }
+    function pct(a, b) { return b ? sprintf("%.1f", 100 * a / b) : "." }
+'
+
 if [[ -s "$out/trios.txt" ]]; then
     members=$(tr '\t' '\n' < "$out/trios.txt" | sort -u | paste -sd, -)
-    # Autosomes only: chrX/chrY need sex-aware rules. GTs are reduced to
-    # alt-allele dosage (0/1/2); anything else (no-call, haploid,
-    # multiallelic CN) counts as missing.
     bcftools query -s "$members" -f '%CHROM\t%INFO/SVTYPE[\t%SAMPLE=%GT]\n' "$vcf" \
-        | awk -F '\t' -v OFS='\t' -v trios="$out/trios.txt" '
-            function dose(g) {
-                if (g == "0/0" || g == "0|0") return 0
-                if (g == "0/1" || g == "1/0" || g == "0|1" || g == "1|0") return 1
-                if (g == "1/1" || g == "1|1") return 2
-                return -1
-            }
-            # Can child dosage c come from one allele of f and one of m?
-            function ok(c, f, m,   a, b) {
-                for (a = (f == 2); a <= (f > 0); a++)
-                    for (b = (m == 2); b <= (m > 0); b++)
-                        if (a + b == c) return 1
-                return 0
-            }
+        | awk -F '\t' -v OFS='\t' -v trios="$out/trios.txt" "$trio_awk_lib"'
             function add(k, t, field) { cnt[k, t, field]++; cnt[k, "ALL", field]++; types[t] = 1 }
-            BEGIN {
-                while ((getline line < trios) > 0) { split(line, p, "\t"); nt++; C[nt] = p[1]; F[nt] = p[2]; M[nt] = p[3] }
-                nf = split("informative inconsistent de_novo missing het_parent transmitted", fields, " ")
-            }
+            BEGIN { read_trios(trios) }
             $1 ~ /^(chr)?[XYM]/ { next }
             {
                 t = $2
@@ -221,15 +225,104 @@ if [[ -s "$out/trios.txt" ]]; then
                     for (t in types) {
                         inf = cnt[k, t, "informative"] + 0; hp = cnt[k, t, "het_parent"] + 0
                         printf "%s\t%s\t%s\t%s\t%d\t%d\t%s\t%d\t%s\t%d\t%d\t%d\t%s\n", C[k], F[k], M[k], t,
-                            inf, cnt[k, t, "inconsistent"], inf ? sprintf("%.1f", 100 * cnt[k, t, "inconsistent"] / inf) : ".",
-                            cnt[k, t, "de_novo"], inf ? sprintf("%.1f", 100 * cnt[k, t, "de_novo"] / inf) : ".",
-                            cnt[k, t, "missing"], hp, cnt[k, t, "transmitted"],
-                            hp ? sprintf("%.1f", 100 * cnt[k, t, "transmitted"] / hp) : "."
+                            inf, cnt[k, t, "inconsistent"], pct(cnt[k, t, "inconsistent"], inf),
+                            cnt[k, t, "de_novo"], pct(cnt[k, t, "de_novo"], inf),
+                            cnt[k, t, "missing"], hp, cnt[k, t, "transmitted"], pct(cnt[k, t, "transmitted"], hp)
                     }
             }
         ' | { read -r h; echo "$h"; sort -t $'\t' -k1,1 -k4,4; } > "$out/trios.tsv"
 else
     echo -e "child\tfather\tmother\tsvtype" > "$out/trios.tsv"
+fi
+
+# ---- Trio error strata ----------------------------------------------------
+
+# The same counts pooled over all trios, split by site properties (SVTYPE,
+# size, AF, caller, RF evidence), then a GQ sweep: at each gq_min, any trio
+# member's GT with GQ < gq_min is treated as a no-call (as a per-genotype
+# GQ filter would do). child_alt is the number of child non-ref calls left,
+# a proxy for what each filter costs in sensitivity.
+hdr=$(bcftools view -h "$vcf")
+info_or_dot() { if grep -q "^##INFO=<ID=$1," <<< "$hdr"; then echo "%INFO/$1"; else echo "."; fi }
+has_gq=0; grep -q '^##FORMAT=<ID=GQ,' <<< "$hdr" && has_gq=1
+gq_thresholds="1 10 20 30 50 100 200 300 500 700 900 999"
+
+if [[ -s "$out/trios.txt" ]]; then
+    fmt="%CHROM\t%INFO/SVTYPE\t%INFO/SVLEN\t$(info_or_dot AC)\t$(info_or_dot AN)\t$(info_or_dot ALGORITHMS)\t$(info_or_dot EVIDENCE)"
+    fmt+="[\t%SAMPLE=%GT:$([[ $has_gq == 1 ]] && echo '%GQ' || echo '.')]\n"
+    bcftools query -s "$members" -f "$fmt" "$vcf" \
+        | awk -F '\t' -v OFS='\t' -v trios="$out/trios.txt" -v has_gq="$has_gq" -v thresholds="$gq_thresholds" "$trio_awk_lib"'
+            function sizebin(l) {
+                if (l == ".") return "no_svlen"
+                if (l < 0) l = -l
+                return l < 100 ? "<100" : l < 500 ? "100-500" : l < 1000 ? "500-1k" : l < 5000 ? "1k-5k" : \
+                       l < 50000 ? "5k-50k" : l < 1000000 ? "50k-1M" : ">=1M"
+            }
+            function afbin(ac, an,   af) {
+                if (ac == "." || an == "." || an == 0) return "no_AN"
+                af = ac / an
+                return ac <= 1 ? "AC<=1" : ac <= 5 ? "AC=2-5" : af < 0.01 ? "AF<1%" : af < 0.05 ? "AF=1-5%" : \
+                       af < 0.5 ? "AF=5-50%" : "AF>=50%"
+            }
+            function tally(key, c, f, m) {
+                if (!(key in seen)) { seen[key] = 1; order[++nk] = key }
+                if (c < 0 || f < 0 || m < 0) { n[key, "missing"]++; return }
+                n[key, "informative"]++
+                if (c > 0) n[key, "child_alt"]++
+                if (!ok(c, f, m)) n[key, "inconsistent"]++
+                if (c > 0 && f == 0 && m == 0) n[key, "de_novo"]++
+                if ((f == 1 && m == 0) || (f == 0 && m == 1)) {
+                    n[key, "het_parent"]++
+                    if (c > 0) n[key, "transmitted"]++
+                }
+            }
+            function gtgq(s, which,   v, colon) {
+                v = g[s]; colon = index(v, ":")
+                return which == "gt" ? substr(v, 1, colon - 1) : substr(v, colon + 1)
+            }
+            BEGIN { read_trios(trios); nth = split(thresholds, th, " ") }
+            $1 ~ /^(chr)?[XYM]/ { next }
+            {
+                t = $2; sz = sizebin($3); af = afbin($4, $5); alg = $6; ev = $7
+                delete g
+                for (i = 8; i <= NF; i++) { eq = index($i, "="); g[substr($i, 1, eq - 1)] = substr($i, eq + 1) }
+                for (k = 1; k <= nt; k++) {
+                    gc = gtgq(C[k], "gt"); gf = gtgq(F[k], "gt"); gm = gtgq(M[k], "gt")
+                    if (!((gc ~ /[1-9]/) || (gf ~ /[1-9]/) || (gm ~ /[1-9]/))) continue
+                    c = dose(gc); f = dose(gf); m = dose(gm)
+                    tally("svtype\t" t "\t0", c, f, m)
+                    tally("svtype\tALL\t0", c, f, m)
+                    tally("size\t" t " " sz "\t0", c, f, m)
+                    tally("af\t" af "\t0", c, f, m)
+                    tally("algorithms\t" alg "\t0", c, f, m)
+                    tally("svtype_algorithms\t" t " " alg "\t0", c, f, m)
+                    tally("evidence\t" ev "\t0", c, f, m)
+                    if (!has_gq) continue
+                    # GQ "." fails every threshold.
+                    qc = gtgq(C[k], "gq"); qf = gtgq(F[k], "gq"); qm = gtgq(M[k], "gq")
+                    for (j = 1; j <= nth; j++) {
+                        T = th[j]
+                        cc = (qc == "." || qc + 0 < T) ? -1 : c
+                        ff = (qf == "." || qf + 0 < T) ? -1 : f
+                        mm = (qm == "." || qm + 0 < T) ? -1 : m
+                        tally("gq_min\t" t "\t" T, cc, ff, mm)
+                        tally("gq_min\tALL\t" T, cc, ff, mm)
+                    }
+                }
+            }
+            END {
+                print "dimension", "stratum", "gq_min", "informative", "child_alt", "inconsistent", "pct_inconsistent",
+                      "de_novo", "pct_de_novo", "missing", "het_parent", "transmitted", "pct_transmitted"
+                for (i = 1; i <= nk; i++) {
+                    key = order[i]; inf = n[key, "informative"] + 0; hp = n[key, "het_parent"] + 0
+                    print key, inf, n[key, "child_alt"] + 0, n[key, "inconsistent"] + 0, pct(n[key, "inconsistent"], inf),
+                          n[key, "de_novo"] + 0, pct(n[key, "de_novo"], inf), n[key, "missing"] + 0,
+                          hp, n[key, "transmitted"] + 0, pct(n[key, "transmitted"], hp)
+                }
+            }
+        ' | { read -r h; echo "$h"; sort -t $'\t' -k1,1 -k2,2 -k3,3n; } > "$out/trio_strata.tsv"
+else
+    echo -e "dimension\tstratum\tgq_min" > "$out/trio_strata.tsv"
 fi
 
 # ---- Summary --------------------------------------------------------------
@@ -249,4 +342,14 @@ fi
     echo
     echo "== Trios, autosomes, all SVTYPEs (per-SVTYPE rows in trios.tsv)"
     awk -F '\t' 'NR == 1 || $4 == "ALL"' "$out/trios.tsv"
+    echo
+    echo "== Trio errors pooled over all trios, by stratum (trio_strata.tsv)"
+    for dim in svtype size af algorithms svtype_algorithms evidence; do
+        echo "-- $dim"
+        awk -F '\t' -v d="$dim" 'NR == 1 || ($1 == d && $3 == 0)' "$out/trio_strata.tsv" | cut -f 2,4-
+    done
+    echo "-- GQ sweep (GTs with GQ < gq_min treated as no-calls)"
+    [[ $has_gq == 1 ]] || echo "(no FORMAT/GQ in this VCF)"
+    awk -F '\t' 'NR == 1 || $1 == "gq_min" || ($1 == "svtype" && $3 == 0)' "$out/trio_strata.tsv" \
+        | cut -f 2- | { read -r h; echo "$h"; sort -t $'\t' -k1,1 -k2,2n; }
 } | tee "$out/summary.txt"
