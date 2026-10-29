@@ -2555,6 +2555,12 @@ The first full cohort run through CleanVcf, QC'd with the same script
   stands out, then RDN0262-00 and RDN0263-00 (4.6%); a sample effect, as
   before.
 - **No inversions**: see below.
+- The QC now runs in the workflow (`QC_SV_VCF`, a top-level call in
+  `genotype_batch.nf`) on the four VCFs in the table above, published as
+  `${outdir}/qc/{genotyped_pesr,combined,cleaned,cleaned_pass}/summary.txt`
+  plus their TSVs. `cleaned_pass` keeps FILTER `PASS` or `.`. It takes the
+  full PED, so a pedigree edit reruns the four QC tasks (and nothing
+  else).
 - `scripts/qc_genotyped_vcf.sh` now skips the outlier rule for an SVTYPE
   most samples lack (q3 = 0), which flagged the only two CTX carriers.
 

@@ -80,6 +80,7 @@ include { VCF_GENOTYPE_COMPLEX_VARIANTS } from '../subworkflows/local/vcf_genoty
 include { VCF_CLEAN_VCF } from '../subworkflows/local/vcf_clean_vcf/main'
 include { PED_SEXES as PED_SEXES_AFS; pedSexes } from '../modules/local/ped_sexes/main'
 include { COMPUTE_AFS as COMPUTE_AFS_CLEANED } from '../modules/local/compute_afs/main'
+include { QC_SV_VCF                   } from '../modules/local/qc_sv_vcf/main'
 include { validateParameters          } from 'plugin/nf-schema'
 
 workflow {
@@ -385,4 +386,16 @@ workflow {
     )
 
     COMPUTE_AFS_CLEANED.out.vcf.view { meta, v, i -> "Cleaned cohort VCF: ${v}" }
+
+    // QC of each stage's output, published to ${outdir}/qc/<id>/summary.txt.
+    QC_SV_VCF(
+        GENOTYPE_BATCH.out.genotyped_pesr_vcf.map { meta, v, tbi -> [ [id: 'genotyped_pesr'], v, tbi ] }
+            .mix(BCFTOOLS_FILL_TAGS_COMBINED.out.vcf.map { meta, v, tbi -> [ [id: 'combined'], v, tbi ] })
+            .mix(COMPUTE_AFS_CLEANED.out.vcf.map { meta, v, tbi -> [ [id: 'cleaned'], v, tbi ] })
+            .mix(COMPUTE_AFS_CLEANED.out.vcf.map { meta, v, tbi -> [ [id: 'cleaned_pass', filters: 'PASS,.'], v, tbi ] }),
+        ped.map { meta, f -> f }.collect(),
+        file("${pipelineRoot}/scripts/qc_genotyped_vcf.sh")
+    )
+
+    QC_SV_VCF.out.qc.view { meta, d -> "QC (${meta.id}): ${d}/summary.txt" }
 }
