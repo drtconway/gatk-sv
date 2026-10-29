@@ -24,7 +24,7 @@
 //
 
 include { GENOME_FILE              } from '../../../modules/local/genome_file/main'
-include { PED_SEXES                } from '../../../modules/local/ped_sexes/main'
+include { PED_SEXES; pedSexes      } from '../../../modules/local/ped_sexes/main'
 include { PLOIDY_TABLE_FROM_PED    } from '../../../modules/local/ploidy_table_from_ped/main'
 include { FORMAT_SVTK_VCF_FOR_GATK } from '../../../modules/local/format_svtk_vcf_for_gatk/main'
 include { VCF_ENDS_BED as VCF_ENDS_BED_PRE  } from '../../../modules/local/vcf_ends_bed/main'
@@ -59,7 +59,7 @@ workflow VCFS_CLUSTER_SVCLUSTER {
     genome_file = GENOME_FILE.out.genome_file.map { meta, g -> g }.collect()
 
     // Sexes only, so pedigree-only PED edits stay cached (see PED_SEXES).
-    PED_SEXES(ped)
+    PED_SEXES(ped.map { meta, f -> [ meta, pedSexes(f) ] })
     PLOIDY_TABLE_FROM_PED(PED_SEXES.out.ped, contig_list.map { meta, c -> c }.collect(), file(ploidy_script))
     ploidy_table = PLOIDY_TABLE_FROM_PED.out.ploidy_table.map { meta, t -> t }.collect()
 

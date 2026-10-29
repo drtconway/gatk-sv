@@ -768,7 +768,8 @@ for two PESR callers and no depth caller. Neither tier of the
 | RegenotypeCNVs | — | Not started (needs depth calls) |
 | MakeCohortVcf: CombineBatches | `vcfs_combine_batches` | Built on the genotyped VCFs, as upstream; not yet run on the cohort |
 | MakeCohortVcf: ResolveComplexVariants | `vcf_resolve_complex_variants` | Built; real local test, not yet run on the cohort |
-| MakeCohortVcf: GenotypeComplex, CleanVcf | — | Not started |
+| MakeCohortVcf: GenotypeComplexVariants | `vcf_genotype_complex_variants` | Built; real local test, not yet run on the cohort |
+| MakeCohortVcf: CleanVcf | — | Not started |
 | AnnotateVcf | — | Not started |
 
 What the output is, as of now:
@@ -2167,7 +2168,16 @@ phenotype zeroed, rows sorted) before each `PLOIDY_TABLE_FROM_PED`, which
 now uses `cache 'deep'` (content hashing). An edit that changes no one's
 sex leaves `PED_SEXES`' output content unchanged, so the ploidy table task
 keeps its hash, work dir and output path, and everything downstream stays
-cached. Checked with `-stub-run` (`PED_SEXES`' stub runs the real command):
+cached.
+
+Refined while building GenotypeComplexVariants, whose RdTest tasks also
+need sexes (and deep-hashing their multi-GB read-count input would be
+slow): the ID+sex table is now built as a value at launch (`pedSexes()`)
+and `PED_SEXES` only writes it, so `PED_SEXES` itself is cached across
+pedigree-only edits and any consumer can take its output as is. The
+table's bytes are unchanged, so the deep-cached ploidy tables carried over.
+Stub-checked: switching to it reran only the 4 `PED_SEXES` tasks; a
+parentage edit afterwards reran nothing. Checked with `-stub-run` (`PED_SEXES`' stub runs the real command):
 a phenotype change plus row reorder reran only the 4 `PED_SEXES` tasks
 (126 cached); a sex change reran the cohort-level chain (86 tasks) with the
 per-sample callers and evidence still cached. Introducing it changes the
@@ -2342,6 +2352,44 @@ translocation breakend stayed BND (`UNRESOLVED_TYPE=SINGLE_ENDER_+-`),
 contigs with no records passed through, and the SR list update mapped a
 merged member's ID to its new one. Not yet run on the cohort.
 
+### `GenotypeComplexVariants`: depth genotyping of complex SVs
+
+`vcf_genotype_complex_variants` subworkflow, run by `genotype_batch.nf` on
+ResolveComplexVariants' output. Reproduces
+`wdl/GenotypeComplexVariants.wdl` (with `ScatterCpxGenotyping`,
+`GenotypeCpxCnvs`, `GenotypeCpxCnvsPerBatch`): each CPX record's CNV
+intervals, and each unresolved inversion single-ender's span, are
+depth-genotyped with RdTest across all samples, and
+`process_posthoc_cpx_depth_regenotyping.py` then keeps, reclassifies or
+drops the record. Per contig: `CPX_CNV_INTERVALS`
+(`gather_cpx_intervals_for_rd_gt.sh`), `SPLIT_BED_BY_SIZE` (chunks of
+2,500 small / 250 large intervals), `RDTEST_GENOTYPE` per chunk
+(`PrintSVEvidence` on the panel-wide read-count matrix, then RdTest with
+TrainSVGenotyping's `rd_table`), `PARSE_CPX_GENOTYPES`. Then a genome-wide
+concat, published as `${outdir}/genotype_complex/cohort.complex_genotype.vcf.gz`.
+
+Single batch, so upstream's per-batch scatter and PED subsetting go, and
+contigs aren't sharded further (upstream: 50,000 records per shard). The
+PED both RdTest and the parser get is `PED_SEXES`' ID+sex table: both
+read only ID and sex (RdTest's family columns are for plotting and de novo
+mode, which upstream leaves off). Kept from upstream as is, oddities
+included: `SplitBedBySize` compares interval length in bp with its "5 kb"
+cutoff unscaled, so every interval lands in the large chunks; and every
+interval is labelled `DUP` for RdTest (only copy states are used).
+
+One fix needed under this pipeline's global `pipefail`: RdTest's
+`grep -v "^#" <chunk>` exits 1 on an empty chunk (e.g. a contig with no
+complex SVs), which upstream runs before `set -o pipefail`; it's now
+`|| true`. Found in the real test below.
+
+Validated for real (`-profile docker`) on a hand-built ResolveComplex-style
+VCF (header from the real ResolveComplex test) with a read-count matrix
+carrying planted depth changes: RdTest called the carrier's deleted
+segment of a `delINV` at copy state 1 (everyone else 2) and the inverted
+segment at 2, and the parser kept the CPX (`AT_LEAST_ONE_CNV_VALIDATED`);
+a half-depth inversion single-ender was called at 1 in its carrier;
+contigs with no complex SVs passed through. Not yet run on the cohort.
+
 ### Output QC: first pass (Oct 2026)
 
 `scripts/qc_genotyped_vcf.sh` on `cohort.genotyped.pesr.vcf.gz` (440
@@ -2392,8 +2440,10 @@ Planned order:
 3. **`MakeCohortVcf`**, now in progress, ahead of step 2: `CombineBatches`
    (built, see [stage 2](#harmonisation-stage-2-cross-caller-merge)),
    `ResolveComplexVariants` (built, see
-   [above](#resolvecomplexvariants-complex-sv-resolution)), then
-   `GenotypeComplexVariants`, `CleanVcf`. This
+   [above](#resolvecomplexvariants-complex-sv-resolution)),
+   `GenotypeComplexVariants` (built, see
+   [above](#genotypecomplexvariants-depth-genotyping-of-complex-svs)), then
+   `CleanVcf`. This
    is what makes the output clean to import into seqR, and the input
    upstream's genotype filtering expects.
    Then **genotype filtering** (`RecalibrateGq` + `FilterGenotypes`, see

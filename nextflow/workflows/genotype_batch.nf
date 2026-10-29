@@ -4,8 +4,8 @@
 // Standalone entry point: sample sheet -> genotyped depth/PESR VCFs --
 // the actual goal of the genotyping prerequisite chain (see
 // ../README.md#path-to-genotyping-the-real-prerequisite-chain) -- then
-// MakeCohortVcf's CombineBatches (cross-caller merge) and
-// ResolveComplexVariants on them. Will be
+// MakeCohortVcf's CombineBatches (cross-caller merge),
+// ResolveComplexVariants and GenotypeComplexVariants on them. Will be
 // renamed once the rest of MakeCohortVcf is here; until then the name is
 // kept so existing launch commands work.
 //
@@ -73,6 +73,7 @@ include { GENOTYPE_BATCH              } from '../subworkflows/local/genotype_bat
 include { VCFS_COMBINE_BATCHES        } from '../subworkflows/local/vcfs_combine_batches/main'
 include { BCFTOOLS_FILL_TAGS as BCFTOOLS_FILL_TAGS_COMBINED } from '../modules/local/bcftools_fill_tags/main'
 include { VCF_RESOLVE_COMPLEX_VARIANTS } from '../subworkflows/local/vcf_resolve_complex_variants/main'
+include { VCF_GENOTYPE_COMPLEX_VARIANTS } from '../subworkflows/local/vcf_genotype_complex_variants/main'
 include { validateParameters          } from 'plugin/nf-schema'
 
 workflow {
@@ -331,4 +332,20 @@ workflow {
     )
 
     VCF_RESOLVE_COMPLEX_VARIANTS.out.vcf.view { meta, v, i -> "Complex-resolved VCF: ${v}" }
+
+    // --- Depth genotyping of complex SVs (MakeCohortVcf's GenotypeComplexVariants) ---
+
+    VCF_GENOTYPE_COMPLEX_VARIANTS(
+        VCF_RESOLVE_COMPLEX_VARIANTS.out.vcf,
+        ped,
+        VCFS_MERGE_READ_COUNTS.out.merged_counts,
+        MEDIAN_COVERAGE.out.median_coverage,
+        GENOTYPE_BATCH.out.genotyping_rd_table,
+        channel.value([ file(params.bin_exclude), file(params.bin_exclude_tbi) ]),
+        contig_list,
+        dict,
+        'cohort'
+    )
+
+    VCF_GENOTYPE_COMPLEX_VARIANTS.out.vcf.view { meta, v, i -> "Complex-genotyped VCF: ${v}" }
 }
