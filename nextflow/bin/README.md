@@ -20,6 +20,8 @@ these support.
 | `bin/extract_format_table.py` | `src/sv-pipeline/scripts/extract_format_table.py` | `797b760468d9dba80610c51aeaa9b71506363ab6` (2026-02-06) |
 | `bin/rewrite_SR_coords.py` | `src/sv-pipeline/03_variant_filtering/scripts/rewrite_SR_coords.py` | `2d5d8a44802548a184d7e57bcc967d2e611e8349` (2025-12-18) |
 | `bin/annotate_RF_evidence.py` | `src/sv-pipeline/03_variant_filtering/scripts/annotate_RF_evidence.py` | `9f5620c1e3a6c633bfe3eae3d24f973cea8e8d1e` (2021-11-04) |
+| `bin/cleanvcf_preprocess.py` | `src/sv-pipeline/04_variant_resolution/scripts/cleanvcf_preprocess.py` | `76bc5526c526504de1cb36c46295d848b5b9584b` (2026-08-18) — see below |
+| `bin/add_retro_del_filters.py` | `src/sv-pipeline/04_variant_resolution/scripts/add_retro_del_filters.py` | `76bc5526c526504de1cb36c46295d848b5b9584b` (2026-08-18) — see below |
 
 Each commit above is the file's own last-touching commit (`git log -1 --
 -- <path>`), not necessarily a shared commit across every row — re-sync
@@ -179,3 +181,18 @@ current pysam does fail on `BND`/`CTX` records, options are: pin an older
 pysam here too, or patch the vendored copy to open the VCF in a way that
 tolerates it (e.g. reading start-to-finish as text where necessary, as
 `_parse_bnd_ends` already partly does).
+
+## `cleanvcf_preprocess.py`, `add_retro_del_filters.py`: newer than the image
+
+Every other CleanVcf step calls its script from GATK-SV's sv-pipeline
+image (`/opt/sv-pipeline`), as the WDL does. These two are vendored
+because the pinned image (`sv-pipeline:2026-06-02-v1.1-24f0fd08`) predates
+upstream commit `76bc5526` ("CleanVcf - PostHoc updates"), which changed
+both scripts and the WDL that calls them, without a new image being
+pinned. So upstream's own WDL at that commit fails against its pinned
+image (`add_retro_del_filters.py: unrecognized arguments: --contig`; found
+in this pipeline's real test). The newer versions are fixes: the old
+`add_retro_del_filters.py` matched introns from every chromosome by
+coordinates alone, and `cleanvcf_preprocess.py` recodes integer `EV`
+values. Both are pure pysam and run in the sv-pipeline image. Drop them
+once a newer sv-pipeline image is pinned.

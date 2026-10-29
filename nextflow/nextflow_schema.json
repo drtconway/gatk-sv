@@ -225,6 +225,24 @@
             "exists": true,
             "description": "Mobile element BED (bgzipped), for svtk resolve --mei-bed in ResolveComplexVariants. Required by workflows/genotype_batch.nf."
         },
+        "line1_reference": {
+            "type": "string",
+            "format": "file-path",
+            "exists": true,
+            "description": "LINE1 BED (bgzipped), for CleanVcf's mobile-element deletion rescue. Required by workflows/genotype_batch.nf."
+        },
+        "hervk_reference": {
+            "type": "string",
+            "format": "file-path",
+            "exists": true,
+            "description": "HERVK BED (bgzipped), for CleanVcf's mobile-element deletion rescue. Required by workflows/genotype_batch.nf."
+        },
+        "intron_reference": {
+            "type": "string",
+            "format": "file-path",
+            "exists": true,
+            "description": "GENCODE CDS intron table (gzipped), for CleanVcf's retrotransposed-intron deletion filter. Required by workflows/genotype_batch.nf."
+        },
         "resolve_max_shard_size": {
             "type": "integer",
             "default": 500,

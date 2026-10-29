@@ -747,9 +747,10 @@ config files, not in pipeline code.
 ### At a glance (Oct 2026)
 
 `workflows/genotype_batch.nf` runs end to end on a real ~480-sample cohort
-(HPC, Slurm + Apptainer): BAMs in, genotyped VCFs with AN/AC/AF out. In
-upstream terms it covers `GatherSampleEvidence` through `GenotypeBatch`,
-for two PESR callers and no depth caller. Neither tier of the
+(HPC, Slurm + Apptainer) through `GenotypeBatch`: BAMs in, genotyped VCFs
+with AN/AC/AF out, for two PESR callers and no depth caller. All four
+`MakeCohortVcf` steps after it are now built and tested locally for real,
+but not yet run on the cohort. Neither tier of the
 [two-tier design](#design-panel-based-two-tier-pipeline) exists yet.
 
 | Upstream stage | Here | State |
@@ -769,7 +770,7 @@ for two PESR callers and no depth caller. Neither tier of the
 | MakeCohortVcf: CombineBatches | `vcfs_combine_batches` | Built on the genotyped VCFs, as upstream; not yet run on the cohort |
 | MakeCohortVcf: ResolveComplexVariants | `vcf_resolve_complex_variants` | Built; real local test, not yet run on the cohort |
 | MakeCohortVcf: GenotypeComplexVariants | `vcf_genotype_complex_variants` | Built; real local test, not yet run on the cohort |
-| MakeCohortVcf: CleanVcf | — | Not started |
+| MakeCohortVcf: CleanVcf | `vcf_clean_vcf` | Built; real local test, not yet run on the cohort |
 | AnnotateVcf | — | Not started |
 
 What the output is, as of now:
@@ -779,14 +780,14 @@ What the output is, as of now:
   Manta and Wham calls of the same variant are still separate records.
 - `<cohort>.genotyped.depth.vcf.gz` is expected to be empty. It holds only
   `ALGORITHMS=depth` records, and there is no depth caller yet.
-- `combine_batches/cohort.combined.vcf.gz` (new, not yet run on the
-  cohort): the two above merged, with cross-caller duplicates clustered
-  into one record. Its GTs are all diploid, as upstream's svtk formatting
-  writes them, so chrX/chrY AN/AF count males as diploid until `CleanVcf`.
-- Not yet a cohort VCF in upstream's sense: no complex-SV resolution, no
-  `CleanVcf` (sex-chromosome genotypes, multiallelic CNVs, overlaps), no
-  genotype filtering, no outlier-sample filtering, no functional
-  annotation.
+- Not yet run on the cohort, in order: `combine_batches/cohort.combined.vcf.gz`
+  (the two above merged, cross-caller duplicates clustered into one
+  record), `resolve_complex/`, `genotype_complex/`, and
+  `clean_vcf/cohort.cleaned.with_af.vcf.gz`, the cohort VCF in upstream's
+  sense (MakeCohortVcf's output).
+- Still missing from it: genotype filtering, outlier-sample filtering,
+  depth-only CNVs, functional annotation; and male chrX/chrY GTs may stay
+  diploid (see [CleanVcf](#cleanvcf-final-cleanup)).
 
 The plan from here is under [Not yet started](#not-yet-started). The rest
 of this section is the build log, in roughly the order things were built.
@@ -2390,6 +2391,57 @@ segment at 2, and the parser kept the CPX (`AT_LEAST_ONE_CNV_VALIDATED`);
 a half-depth inversion single-ender was called at 1 in its carrier;
 contigs with no complex SVs passed through. Not yet run on the cohort.
 
+### `CleanVcf`: final cleanup
+
+`vcf_clean_vcf` subworkflow, run by `genotype_batch.nf` on
+GenotypeComplexVariants' output; the last step of MakeCohortVcf.
+Reproduces `wdl/CleanVcf.wdl` / `wdl/CleanVcfChromosome.wdl` per contig,
+upstream's ~15 tasks grouped into 3 by container:
+
+1. `CLEANVCF_PREPROCESS` (sv-pipeline image): FormatVcfToClean (svtk →
+   GATK format, `ECN` from the ploidy table, SR flags from
+   ResolveComplexVariants' updated lists), then `cleanvcf_preprocess.py`.
+2. `CLEANVCF_REVISE` (GATK-SV fork image): `SVReviseOverlappingCnvs`,
+   `SVReviseMultiallelicCnvs`, `SVReviseOverlappingMultiallelics`.
+3. `CLEANVCF_POSTPROCESS` (sv-pipeline image): `cleanvcf_postprocess.py`,
+   DropRedundantCnvs, StitchFragmentedCnvs (×2), mobile-element deletion
+   rescue (LINE1/HERVK), `HIGH_ALGORITHM_FDR` on Wham-only deletions,
+   `RETRO_DEL` (deletions of retrotransposed introns), FinalCleanup (IDs
+   like `cohort.chr1.final_cleanup_DEL_chr1_1`, CNVs < 5 kb dropped),
+   FormatVcfToOutput (GATK format).
+
+Then a genome-wide concat and AN/AC/AF, published as
+`${outdir}/clean_vcf/cohort.cleaned.with_af.vcf.gz`: the cohort VCF.
+Contigs aren't sharded (upstream: 5,000 records per shard). The PED for
+both clean scripts is `PED_SEXES`' table (they read only sex); the ploidy
+table is GenerateBatchMetrics' (`retain_female_chr_y=false`, as upstream's
+FormatVcfForGatk). New static resources: `line1_reference`,
+`hervk_reference`, `intron_reference` (fetched by
+`scripts/fetch_static_resources.sh`). Not implemented: the outlier-sample
+list (no FilterBatchSamples yet) and MakeCohortVcfMetrics (off by default
+upstream).
+
+**Upstream's WDL is ahead of its pinned image here.** Commit `76bc5526`
+(2026-08-18) changed `add_retro_del_filters.py` (adds `--contig`) and
+`cleanvcf_preprocess.py`, and the WDL calls them the new way, but no newer
+sv-pipeline image was pinned, so upstream's own WDL fails against its
+image (`unrecognized arguments: --contig`, found in the real test below).
+Both newer scripts are fixes (the old retro-deletion filter matched introns
+across chromosomes by coordinates alone), so they are vendored into `bin/`
+and passed in; every other step uses the image's scripts. See
+`bin/README.md`.
+
+Validated for real (`-profile docker`) on GenotypeComplexVariants' test
+output plus a Wham-only DEL and a chrX DEL, with upstream's real
+LINE1/HERVK/intron references: the Wham-only DEL got `HIGH_ALGORITHM_FDR`,
+the inversion single-ender `UNRESOLVED`, the CPX and Manta DEL passed,
+final IDs as upstream, and chrX `ECN` was 1 for males. Not exercised: the
+Revise walkers' CNV logic (no overlapping or multiallelic CNVs in the
+test). **Open:** a male carrier's chrX GT stays diploid (`0/1`, `ECN=1`),
+so chrX/chrY AN/AF count males as diploid; check against the cohort run,
+and whether upstream's genotype filtering (FilterGenotypes, which takes
+the ploidy table) is where that gets fixed. Not yet run on the cohort.
+
 ### Output QC: first pass (Oct 2026)
 
 `scripts/qc_genotyped_vcf.sh` on `cohort.genotyped.pesr.vcf.gz` (440
@@ -2442,8 +2494,9 @@ Planned order:
    `ResolveComplexVariants` (built, see
    [above](#resolvecomplexvariants-complex-sv-resolution)),
    `GenotypeComplexVariants` (built, see
-   [above](#genotypecomplexvariants-depth-genotyping-of-complex-svs)), then
-   `CleanVcf`. This
+   [above](#genotypecomplexvariants-depth-genotyping-of-complex-svs)),
+   `CleanVcf` (built, see [above](#cleanvcf-final-cleanup)). All four
+   built; next is running them on the cohort. This
    is what makes the output clean to import into seqR, and the input
    upstream's genotype filtering expects.
    Then **genotype filtering** (`RecalibrateGq` + `FilterGenotypes`, see
@@ -2458,6 +2511,25 @@ Planned order:
 Also not started: Scramble (needs coverage counts and Manta's VCF, not
 just the BAM), `EvidenceQC`, `MergeBatchSites` (upstream's shortcut for
 cohorts without gCNV).
+
+**To do later: gnomAD-SV (v4.1) as a reference, not a truth set.**
+Considered and rejected as a substitute for the panel or as genotype
+truth: it is sites-only (no per-sample evidence to train cutoffs or
+genotype against, which must come from samples sequenced like ours), it is
+itself a GATK-SV call set with its own error rate, and it lacks exactly
+the rare/private variants that matter here, so calibrating to it would
+penalise real novel calls. Worth doing instead:
+
+- Add a gnomAD-SV match to `scripts/qc_genotyped_vcf.sh`: the fraction of
+  our sites matched (SV type + reciprocal overlap, or GATK SVConcordance
+  as upstream uses), per stratum, next to the trio error rates. Expect
+  PE-only and AF 1–5% sites to be mostly unmatched if they are artifacts.
+- Use our-cohort AF vs gnomAD AF to flag likely lab/pipeline artifacts
+  (common here, absent from gnomAD) as a site filter.
+- gnomAD AF annotation for seqR (upstream's AnnotateVcf external-AF step,
+  or seqR's own annotation), with `SVAnnotate`.
+
+Needs the gnomAD v4.1 SV sites VCF on the HPC.
 
 Known loose ends in what is built:
 

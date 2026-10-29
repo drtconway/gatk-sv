@@ -4,8 +4,8 @@
 // Standalone entry point: sample sheet -> genotyped depth/PESR VCFs --
 // the actual goal of the genotyping prerequisite chain (see
 // ../README.md#path-to-genotyping-the-real-prerequisite-chain) -- then
-// MakeCohortVcf's CombineBatches (cross-caller merge),
-// ResolveComplexVariants and GenotypeComplexVariants on them. Will be
+// the whole of MakeCohortVcf on them (CombineBatches, ResolveComplexVariants,
+// GenotypeComplexVariants, CleanVcf). Will be
 // renamed once the rest of MakeCohortVcf is here; until then the name is
 // kept so existing launch commands work.
 //
@@ -35,6 +35,8 @@
 //     --clustering_track_rm hg38.RM.bed \
 //     --cytobands cytobands_hg38.bed.gz --cytobands_tbi cytobands_hg38.bed.gz.tbi \
 //     --mei_bed hg38.repeatmasker.mei.with_SVA.pad_50_merged.bed.gz \
+//     --line1_reference LINE1.sorted.bed.gz --hervk_reference HERVK.sorted.bed.gz \
+//     --intron_reference gencode.v39.CDS.intron.tsv.gz \
 //     --outdir results
 //
 // Composes generate_batch_metrics.nf's own full chain (stage-1
@@ -74,6 +76,8 @@ include { VCFS_COMBINE_BATCHES        } from '../subworkflows/local/vcfs_combine
 include { BCFTOOLS_FILL_TAGS as BCFTOOLS_FILL_TAGS_COMBINED } from '../modules/local/bcftools_fill_tags/main'
 include { VCF_RESOLVE_COMPLEX_VARIANTS } from '../subworkflows/local/vcf_resolve_complex_variants/main'
 include { VCF_GENOTYPE_COMPLEX_VARIANTS } from '../subworkflows/local/vcf_genotype_complex_variants/main'
+include { VCF_CLEAN_VCF } from '../subworkflows/local/vcf_clean_vcf/main'
+include { BCFTOOLS_FILL_TAGS as BCFTOOLS_FILL_TAGS_CLEANED } from '../modules/local/bcftools_fill_tags/main'
 include { validateParameters          } from 'plugin/nf-schema'
 
 workflow {
@@ -98,7 +102,8 @@ workflow {
         'clustering_config_part1', 'stratification_config_part1',
         'clustering_config_part2', 'stratification_config_part2',
         'clustering_track_sr', 'clustering_track_sd', 'clustering_track_rm',
-        'cytobands', 'cytobands_tbi', 'mei_bed'
+        'cytobands', 'cytobands_tbi', 'mei_bed',
+        'line1_reference', 'hervk_reference', 'intron_reference'
     ].each { p ->
         if (!params[p]) {
             error "genotype_batch.nf requires --${p}"
@@ -348,4 +353,27 @@ workflow {
     )
 
     VCF_GENOTYPE_COMPLEX_VARIANTS.out.vcf.view { meta, v, i -> "Complex-genotyped VCF: ${v}" }
+
+    // --- Final cleanup (MakeCohortVcf's CleanVcf), then AN/AC/AF ---
+
+    VCF_CLEAN_VCF(
+        VCF_GENOTYPE_COMPLEX_VARIANTS.out.vcf,
+        VCF_RESOLVE_COMPLEX_VARIANTS.out.bothside_pass,
+        VCF_RESOLVE_COMPLEX_VARIANTS.out.background_fail,
+        ped,
+        VCFS_GENERATE_BATCH_METRICS.out.ploidy_table.map { list -> [ [id: 'ploidy'], list[0] ] },
+        contig_list,
+        channel.value([ file(params.line1_reference), file(params.hervk_reference), file(params.intron_reference) ]),
+        params.chr_x ?: 'chrX',
+        params.chr_y ?: 'chrY',
+        'cohort',
+        "${pipelineRoot}/bin/cleanvcf_preprocess.py",
+        "${pipelineRoot}/bin/add_retro_del_filters.py"
+    )
+
+    BCFTOOLS_FILL_TAGS_CLEANED(
+        VCF_CLEAN_VCF.out.vcf.map { meta, v, tbi -> [ [id: 'cohort.cleaned.with_af'], v, tbi ] }
+    )
+
+    BCFTOOLS_FILL_TAGS_CLEANED.out.vcf.view { meta, v, i -> "Cleaned cohort VCF: ${v}" }
 }
