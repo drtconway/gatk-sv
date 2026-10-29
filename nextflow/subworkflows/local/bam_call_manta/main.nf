@@ -21,12 +21,13 @@
 // incomplete via real KeyErrors/GATKExceptions on real data -- none of
 // them set ALGORITHMS, which SVCluster requires.
 //
-// Not implemented: GATK-SV also runs Manta's raw output through
-// convertInversion.py (converts Manta's inversion-signaling BND pairs
-// into proper INV records) before standardization. See README known gaps.
+// Before standardization, MANTA_CONVERT_INVERSION turns Manta's inversion
+// BND pairs into INV records, as wdl/Manta.wdl does with
+// convertInversion.py.
 //
 
 include { MANTA_GERMLINE  } from '../../../modules/nf-core/manta/germline/main'
+include { MANTA_CONVERT_INVERSION } from '../../../modules/local/manta_convert_inversion/main'
 include { SVTK_STANDARDIZE } from '../../../modules/local/svtk_standardize/main'
 
 workflow BAM_CALL_MANTA {
@@ -64,8 +65,13 @@ workflow BAM_CALL_MANTA {
     // when the real tool isn't installed. Wire it up once we're running
     // against real containers and actually need version tracking.
 
-    SVTK_STANDARDIZE(
+    MANTA_CONVERT_INVERSION(
         MANTA_GERMLINE.out.diploid_sv_vcf,
+        fasta.map { meta, f -> f }.combine(fasta_fai.map { meta, f -> f }).collect()
+    )
+
+    SVTK_STANDARDIZE(
+        MANTA_CONVERT_INVERSION.out.vcf,
         primary_contigs_fai.map { meta, c -> c }.collect(),
         'manta',
         min_size

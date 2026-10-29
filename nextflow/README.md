@@ -748,9 +748,11 @@ config files, not in pipeline code.
 
 `workflows/genotype_batch.nf` runs end to end on a real ~480-sample cohort
 (HPC, Slurm + Apptainer) through `GenotypeBatch`: BAMs in, genotyped VCFs
-with AN/AC/AF out, for two PESR callers and no depth caller. All four
-`MakeCohortVcf` steps after it are now built and tested locally for real,
-but not yet run on the cohort. Neither tier of the
+with AN/AC/AF out, for two PESR callers and no depth caller, and on
+through all four `MakeCohortVcf` steps to the cleaned cohort VCF. That
+first full run had no inversions (Manta's `convertInversion.py` was
+skipped, see [Inversions were never resolved](#inversions-were-never-resolved));
+the fix reruns everything after Manta. Neither tier of the
 [two-tier design](#design-panel-based-two-tier-pipeline) exists yet.
 
 | Upstream stage | Here | State |
@@ -767,27 +769,27 @@ but not yet run on the cohort. Neither tier of the
 | FilterBatch: FilterBatchSamples (outliers) | — | Not started |
 | GenotypeBatch | `genotype_batch` (+ AN/AC/AF) | Done; real cohort |
 | RegenotypeCNVs | — | Not started (needs depth calls) |
-| MakeCohortVcf: CombineBatches | `vcfs_combine_batches` | Built on the genotyped VCFs, as upstream; not yet run on the cohort |
-| MakeCohortVcf: ResolveComplexVariants | `vcf_resolve_complex_variants` | Built; real local test, not yet run on the cohort |
-| MakeCohortVcf: GenotypeComplexVariants | `vcf_genotype_complex_variants` | Built; real local test, not yet run on the cohort |
-| MakeCohortVcf: CleanVcf | `vcf_clean_vcf` | Built; real local test, not yet run on the cohort |
-| AnnotateVcf | — | Not started |
+| MakeCohortVcf: CombineBatches | `vcfs_combine_batches` | Done; real cohort |
+| MakeCohortVcf: ResolveComplexVariants | `vcf_resolve_complex_variants` | Done; real cohort, but inversions only after the `convertInversion.py` fix (not yet rerun) |
+| MakeCohortVcf: GenotypeComplexVariants | `vcf_genotype_complex_variants` | Done; real cohort |
+| MakeCohortVcf: CleanVcf | `vcf_clean_vcf` | Done; real cohort |
+| AnnotateVcf | `COMPUTE_AFS` only (sex-aware AN/AC/AF) | Rest not started |
 
 What the output is, as of now:
 
-- `<cohort>.genotyped.pesr.vcf.gz` is the real result: Manta + Wham
-  calls, RF-filtered and genotyped across the cohort.
-  Manta and Wham calls of the same variant are still separate records.
-- `<cohort>.genotyped.depth.vcf.gz` is expected to be empty. It holds only
-  `ALGORITHMS=depth` records, and there is no depth caller yet.
-- Not yet run on the cohort, in order: `combine_batches/cohort.combined.vcf.gz`
-  (the two above merged, cross-caller duplicates clustered into one
-  record), `resolve_complex/`, `genotype_complex/`, and
-  `clean_vcf/cohort.cleaned.with_af.vcf.gz`, the cohort VCF in upstream's
-  sense (MakeCohortVcf's output).
+- `clean_vcf/cohort.cleaned.with_af.vcf.gz` is the real result, the
+  cohort VCF in upstream's sense (MakeCohortVcf's output), with sex-aware
+  AN/AC/AF. Use its PASS records (FILTER `PASS` or `.`, see
+  [Output QC](#output-qc-makecohortvcf-oct-2026)).
+- Before it, in order: `genotype_batch/<cohort>.genotyped.pesr.vcf.gz`
+  (Manta + Wham calls, RF-filtered and genotyped; callers' calls of the
+  same variant still separate), `combine_batches/cohort.combined.vcf.gz`
+  (cross-caller duplicates merged), `resolve_complex/`, `genotype_complex/`.
+  `<cohort>.genotyped.depth.vcf.gz` is expected to be empty: there is no
+  depth caller yet.
 - Still missing from it: genotype filtering, outlier-sample filtering,
-  depth-only CNVs, functional annotation; and male chrX/chrY GTs may stay
-  diploid (see [CleanVcf](#cleanvcf-final-cleanup)).
+  depth-only CNVs, functional annotation. Male chrX/chrY GTs are diploid
+  notation, as upstream; AF accounts for that.
 
 The plan from here is under [Not yet started](#not-yet-started). The rest
 of this section is the build log, in roughly the order things were built.
@@ -804,10 +806,11 @@ sheet (see `tests/data/samplesheet.tsv`):
   (`wdl/Manta.wdl:137`, the `manta_region_bed` resource, wired into
   `MANTA_GERMLINE`'s `target_bed`). Raw output is then standardized with
   `SVTK_STANDARDIZE` — see below.
-  - **Not implemented**: GATK-SV also runs Manta's raw output through
-    `convertInversion.py` (converts Manta's inversion-signaling `BND` pairs
-    into proper `INV` records) before standardization. Skipped for now;
-    revisit once inversions specifically need validating.
+  - Before standardization, `MANTA_CONVERT_INVERSION` runs Manta's
+    `convertInversion.py`, as GATK-SV does, turning Manta's inversion
+    `BND` pairs into `INV` records. Skipped at first, which left the
+    cohort with no inversions (see
+    [Inversions were never resolved](#inversions-were-never-resolved)).
 - `bam_call_wham` (wraps nf-core's `whamg`) and its standalone entry point
   `workflows/call_wham.nf`. Contig restriction via `-c primary_contigs_list`
   is wired through `ext.args` in `conf/modules.config` (see the pitfalls
@@ -2473,10 +2476,18 @@ LINE1/HERVK/intron references: the Wham-only DEL got `HIGH_ALGORITHM_FDR`,
 the inversion single-ender `UNRESOLVED`, the CPX and Manta DEL passed,
 final IDs as upstream, and chrX `ECN` was 1 for males. Not exercised: the
 Revise walkers' CNV logic (no overlapping or multiallelic CNVs in the
-test). **Open:** a male carrier's chrX GT stays diploid (`0/1`, `ECN=1`),
-so chrX/chrY AN/AF count males as diploid; check against the cohort run,
-and whether upstream's genotype filtering (FilterGenotypes, which takes
-the ploidy table) is where that gets fixed. Not yet run on the cohort.
+test). A male carrier's chrX GT stays diploid (`0/1`, `ECN=1`), and the
+cohort run confirmed no haploid GTs. That is upstream's behaviour:
+`cleanvcf_preprocess.py` revises male genotypes only for one class of
+depth artifact, and upstream makes AN/AC/AF sex-aware later, in
+AnnotateVcf's `compute_AFs.py`. So the final AN/AC/AF here come from
+`COMPUTE_AFS` (upstream's script, with `PED_SEXES`' table and the
+`par_bed` resource), not `bcftools +fill-tags`. Outside the PARs on
+chrX/chrY a male counts one allele, and AC counts male carriers; it also
+adds `AN_MALE`, `AF_FEMALE` and so on, plus genotype counts. Real test
+(`-profile docker`): at a non-PAR chrX site, two males (`0/1` and `1/1`)
+and a female (`0/1`) gave AN=4, AC=3; a PAR1 site stayed diploid, flagged
+`PAR`; autosomes were unchanged.
 
 ### Output QC: first pass (Oct 2026)
 
@@ -2512,6 +2523,63 @@ on the cleaned VCF, with published pretrained models
 (`aou_recalibrate_gq_model_file`, `hgsvc_release3_gq_model_file`) and
 `baseline_sl_cutoffs.tsv`; the fallback is gnomAD-SV v2-style per-stratum
 minimum-GQ tables trained on these trios.
+
+### Output QC: MakeCohortVcf (Oct 2026)
+
+The first full cohort run through CleanVcf, QC'd with the same script
+(143 trios: the PED correction made RDN0249-03 a half-sibling).
+
+| VCF | Sites | Inconsistent | De novo | Transmission |
+|---|---|---|---|---|
+| Genotyped PESR | 81,833 | 13.7% | 4.1% | 45.2% |
+| Combined (CombineBatches) | 63,235 | 13.1% | 4.5% | 44.9% |
+| Cleaned, all records | 57,672 | 12.8% | 4.6% | 44.7% |
+| Cleaned, PASS (and `.`) | 39,996 | 11.4% | 2.6% | 47.9% |
+
+- **CombineBatches** removed 18.6k sites, mostly DEL (−13.8k) and DUP
+  (−3.7k) where Manta and Wham called the same event. The merged
+  `manta,wham` records are the best calls in the VCF: DEL 0.6% de novo,
+  against 3.3% Manta-only and 14.5% Wham-only.
+- **CleanVcf's filters fall on the worst calls**: `UNRESOLVED` (10,418, every
+  BND), `HIGH_ALGORITHM_FDR` (7,113 Wham-only DELs), `RETRO_DEL` (115),
+  `MULTIALLELIC` (the 28 CNVs). 54 records have FILTER `.`, likely the
+  mobile-element deletions rescued from BNDs (removing `UNRESOLVED` leaves no
+  filter, as upstream); treat them as PASS. 383 complex SVs resolved
+  (316 dDUP, 37 dDUP_iDEL, 30 INS_iDEL), with 0.4% de novo and 52.8%
+  transmission. All AC=0 sites are gone.
+- **Left after PASS**: low frequency (AF 1–5% at 9.4% de novo, AC 2–5 at
+  8.1%), DUP 1–50 kb (6–16%; Manta-only DUP 7.3%), PE-only evidence
+  (8.4%). GQ ≥ 20 halves INS de novos and does little elsewhere. These are
+  genotype filtering's targets.
+- **RDN0355-00** (8.9% de novo, 18.7% inconsistent against ~2.5% and ~11%)
+  stands out, then RDN0262-00 and RDN0263-00 (4.6%); a sample effect, as
+  before.
+- **No inversions**: see below.
+- `scripts/qc_genotyped_vcf.sh` now skips the outlier rule for an SVTYPE
+  most samples lack (q3 = 0), which flagged the only two CTX carriers.
+
+#### Inversions were never resolved
+
+The combined VCF had 1,385 `++` and 1,342 `--` same-chromosome BNDs
+(inversion breakends), yet the cleaned VCF had no `INV`, no
+inversion-containing complex type, and ~2,000 each of `SINGLE_ENDER_++`
+and `SINGLE_ENDER_--`. ResolveComplexVariants' inversion pass takes
+`INFO/SVTYPE="INV"`, as upstream's does, so it got an empty VCF. Upstream
+gets `INV` records because `wdl/Manta.wdl` runs Manta's own
+`convertInversion.py` on each raw VCF, merging each inversion BND mate pair
+(both `]`-ended: INV3, or both `[`-started: INV5) into one `INV` record;
+`svtk standardize` turns INV3/INV5 into STRANDS `++`/`--`. That step was
+skipped here early on, as a known gap.
+
+Fix: `MANTA_CONVERT_INVERSION` between Manta and `SVTK_STANDARDIZE`, in
+upstream's Manta image (`convertInversion.py` needs python2 and samtools;
+the nf-core Manta image has no samtools). Real test (`-profile docker`): a
+Manta-style VCF with one INV3 and one INV5 mate pair and a DEL came out as
+two `INV` records (STRANDS `++` and `--`) and the DEL, after standardizing.
+Adopting it reruns everything downstream of Manta's standardized VCFs
+(Manta itself, Wham and evidence collection stay cached): stub resumes
+reran 124 of 205 tasks, then cached all 205. Wham's calls are unchanged:
+upstream runs `convertInversion.py` on Manta's output only.
 
 ### Not yet started
 
@@ -2572,7 +2640,5 @@ Known loose ends in what is built:
 - `ADJUDICATE_SV`'s no-depth-caller fallback lets PESR calls ≥5 kb pass
   on RD alone (see [above](#at-cohort-scale-480-samples-adjudicate_sv-crashed-on-the-missing-depth-caller)).
 - Wham runs genome-wide, not over GATK-SV's include list (see Callers).
-- Manta's `convertInversion.py` step is skipped; matters once complex
-  resolution is built.
 - `CollectSVEvidence` isn't restricted with `-L primary_contigs_list`, as
   upstream does.

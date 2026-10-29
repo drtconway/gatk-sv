@@ -37,6 +37,7 @@
 //     --mei_bed hg38.repeatmasker.mei.with_SVA.pad_50_merged.bed.gz \
 //     --line1_reference LINE1.sorted.bed.gz --hervk_reference HERVK.sorted.bed.gz \
 //     --intron_reference gencode.v39.CDS.intron.tsv.gz \
+//     --par_bed hg38.par.bed \
 //     --outdir results
 //
 // Composes generate_batch_metrics.nf's own full chain (stage-1
@@ -77,7 +78,8 @@ include { BCFTOOLS_FILL_TAGS as BCFTOOLS_FILL_TAGS_COMBINED } from '../modules/l
 include { VCF_RESOLVE_COMPLEX_VARIANTS } from '../subworkflows/local/vcf_resolve_complex_variants/main'
 include { VCF_GENOTYPE_COMPLEX_VARIANTS } from '../subworkflows/local/vcf_genotype_complex_variants/main'
 include { VCF_CLEAN_VCF } from '../subworkflows/local/vcf_clean_vcf/main'
-include { BCFTOOLS_FILL_TAGS as BCFTOOLS_FILL_TAGS_CLEANED } from '../modules/local/bcftools_fill_tags/main'
+include { PED_SEXES as PED_SEXES_AFS; pedSexes } from '../modules/local/ped_sexes/main'
+include { COMPUTE_AFS as COMPUTE_AFS_CLEANED } from '../modules/local/compute_afs/main'
 include { validateParameters          } from 'plugin/nf-schema'
 
 workflow {
@@ -103,7 +105,7 @@ workflow {
         'clustering_config_part2', 'stratification_config_part2',
         'clustering_track_sr', 'clustering_track_sd', 'clustering_track_rm',
         'cytobands', 'cytobands_tbi', 'mei_bed',
-        'line1_reference', 'hervk_reference', 'intron_reference'
+        'line1_reference', 'hervk_reference', 'intron_reference', 'par_bed'
     ].each { p ->
         if (!params[p]) {
             error "genotype_batch.nf requires --${p}"
@@ -371,9 +373,16 @@ workflow {
         "${pipelineRoot}/bin/add_retro_del_filters.py"
     )
 
-    BCFTOOLS_FILL_TAGS_CLEANED(
-        VCF_CLEAN_VCF.out.vcf.map { meta, v, tbi -> [ [id: 'cohort.cleaned.with_af'], v, tbi ] }
+    // Sex-aware AN/AC/AF (hemizygous males outside the PARs), as upstream's
+    // AnnotateVcf; bcftools +fill-tags would count males as diploid on chrX.
+    PED_SEXES_AFS(ped.map { meta, f -> [ meta, pedSexes(f) ] })
+    COMPUTE_AFS_CLEANED(
+        VCF_CLEAN_VCF.out.vcf.map { meta, v, tbi -> [ [id: 'cohort.cleaned.with_af'], v, tbi ] },
+        PED_SEXES_AFS.out.ped.map { meta, p -> p }.collect(),
+        file(params.par_bed),
+        params.chr_x ?: 'chrX',
+        params.chr_y ?: 'chrY'
     )
 
-    BCFTOOLS_FILL_TAGS_CLEANED.out.vcf.view { meta, v, i -> "Cleaned cohort VCF: ${v}" }
+    COMPUTE_AFS_CLEANED.out.vcf.view { meta, v, i -> "Cleaned cohort VCF: ${v}" }
 }

@@ -243,6 +243,12 @@
             "exists": true,
             "description": "GENCODE CDS intron table (gzipped), for CleanVcf's retrotransposed-intron deletion filter. Required by workflows/genotype_batch.nf."
         },
+        "par_bed": {
+            "type": "string",
+            "format": "file-path",
+            "exists": true,
+            "description": "Pseudoautosomal regions BED (plain), for sex-aware AN/AC/AF on the cleaned cohort VCF (compute_AFs.py --par). Required by workflows/genotype_batch.nf."
+        },
         "resolve_max_shard_size": {
             "type": "integer",
             "default": 500,

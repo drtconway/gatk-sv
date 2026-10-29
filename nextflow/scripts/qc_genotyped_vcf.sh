@@ -147,6 +147,9 @@ tail -n +2 "$out/per_sample_counts.tsv" | awk -F '\t' '$2 != "NOCALL"' \
             if (t == "") return
             q1 = q(0.25); q3 = q(0.75); lo = q1 - k * (q3 - q1); hi = q3 + k * (q3 - q1)
             print t, n, q(0.5), q1, q3, lo, hi > cut
+            # A class most samples lack (q3 = 0, e.g. CTX) has a zero-width
+            # cutoff, so any carrier would be flagged: skip it.
+            if (q3 == 0) return
             for (i = 1; i <= n; i++) if (v[i] < lo || v[i] > hi) print s[i], t, v[i], lo, hi
         }
         BEGIN { cut = "/dev/stderr"; print "sample", "svtype", "count", "low_cutoff", "high_cutoff" }

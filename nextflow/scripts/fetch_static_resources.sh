@@ -65,6 +65,7 @@ mei_bed https://storage.googleapis.com/gatk-sv-resources-public/hg38/v0/sv-resou
 line1_reference https://storage.googleapis.com/gatk-sv-resources-public/hg38/v0/sv-resources/resources/v1/LINE1.sorted.bed.gz
 hervk_reference https://storage.googleapis.com/gatk-sv-resources-public/hg38/v0/sv-resources/resources/v1/HERVK.sorted.bed.gz
 intron_reference https://storage.googleapis.com/gatk-sv-resources-public/hg38/v0/sv-resources/resources/v1/gencode.v39.CDS.intron.tsv.gz
+par_bed https://storage.googleapis.com/gatk-sv-resources-public/hg38/v0/sv-resources/resources/v1/hg38.par.bed
 "
 
 declare -a param_lines=()
