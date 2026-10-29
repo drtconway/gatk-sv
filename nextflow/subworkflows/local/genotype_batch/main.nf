@@ -41,7 +41,7 @@ include { TABIX_SV_EVIDENCE as TABIX_CONTIG_RD } from '../../../modules/local/ta
 include { TABIX_SV_EVIDENCE as TABIX_CONTIG_PE } from '../../../modules/local/tabix_sv_evidence/main'
 include { TABIX_SV_EVIDENCE as TABIX_CONTIG_SR } from '../../../modules/local/tabix_sv_evidence/main'
 include { GATK_GENOTYPESVS } from '../../../modules/local/gatk4/genotype_svs/main'
-include { CONCAT_VCFS as CONCAT_GENOTYPE_BATCH_SHARDS } from '../../../modules/local/concat_vcfs/main'
+include { CONCAT_VCFS as CONCAT_GENOTYPE_BATCH_SHARDS; contigOrdered } from '../../../modules/local/concat_vcfs/main'
 include { SEPARATE_DEPTH_PESR } from '../../../modules/local/separate_depth_pesr/main'
 include { GENERATE_REGENO_COVERAGE_MEDIANS } from '../../../modules/local/generate_regeno_coverage_medians/main'
 include { BCFTOOLS_FILL_TAGS as BCFTOOLS_FILL_TAGS_DEPTH } from '../../../modules/local/bcftools_fill_tags/main'
@@ -163,11 +163,14 @@ workflow GENOTYPE_BATCH {
         sr_table_value
     )
 
+    // In reference contig order, not filename order (chr1, chr10, ...,
+    // chr2): CombineBatches' SVCluster rejects the latter.
     concat_input = GATK_GENOTYPESVS.out.vcf
-        .map { meta, v, tbi -> [ v, tbi ] }
+        .map { meta, v, tbi -> [ meta.id - "${cohort_name}.genotype_batch.", v, tbi ] }
         .collect(flat: false)
-        .map { pairs -> pairs.sort { it[0].name } }
-        .map { pairs -> [ [id: "${cohort_name}.genotype_batch"], pairs.collect { it[0] }, pairs.collect { it[1] } ] }
+        .map { rows -> [ rows ] }
+        .combine(contig_list.map { meta, c -> [ file(c).readLines().findAll { it } ] })
+        .map { rows, names -> [ [id: "${cohort_name}.genotype_batch"] ] + contigOrdered(rows, names) }
 
     CONCAT_GENOTYPE_BATCH_SHARDS(concat_input)
 

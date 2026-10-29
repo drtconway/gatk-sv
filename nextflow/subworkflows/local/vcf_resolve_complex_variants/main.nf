@@ -31,7 +31,7 @@ include { SHARD_VCF_CPX as SHARD_VCF_CPX_ALL } from '../../../modules/local/reso
 include { SVTK_RESOLVE_SHARD      } from '../../../modules/local/resolve_complex/svtk_resolve_shard/main'
 include { CONCAT_VCFS as CONCAT_RESOLVED_SHARDS } from '../../../modules/local/concat_vcfs/main'
 include { INTEGRATE_RESOLVED_VCFS } from '../../../modules/local/resolve_complex/integrate_resolved_vcfs/main'
-include { CONCAT_VCFS as CONCAT_COMPLEX_RESOLVE } from '../../../modules/local/concat_vcfs/main'
+include { CONCAT_VCFS as CONCAT_COMPLEX_RESOLVE; contigOrdered } from '../../../modules/local/concat_vcfs/main'
 include { UPDATE_SR_LISTS         } from '../../../modules/local/resolve_complex/update_sr_lists/main'
 
 workflow VCF_RESOLVE_COMPLEX_VARIANTS {
@@ -124,10 +124,11 @@ workflow VCF_RESOLVE_COMPLEX_VARIANTS {
     // --- genome-wide ---
     CONCAT_COMPLEX_RESOLVE(
         INTEGRATE_RESOLVED_VCFS.out.vcf
-            .map { meta, v, tbi -> [ v, tbi ] }
+            .map { meta, v, tbi -> [ meta.contig, v, tbi ] }
             .collect(flat: false)
-            .map { pairs -> pairs.sort { it[0].name } }
-            .map { pairs -> [ [id: "${cohort_name}.complex_resolve"], pairs.collect { it[0] }, pairs.collect { it[1] } ] }
+            .map { rows -> [ rows ] }
+            .combine(contig_list.map { meta, c -> [ file(c).readLines().findAll { it } ] })
+            .map { rows, names -> [ [id: "${cohort_name}.complex_resolve"] ] + contigOrdered(rows, names) }
     )
 
     UPDATE_SR_LISTS(CONCAT_COMPLEX_RESOLVE.out.vcf, bothside_value, background_value)

@@ -19,7 +19,7 @@ include { PED_SEXES; pedSexes  } from '../../../modules/local/ped_sexes/main'
 include { CLEANVCF_PREPROCESS  } from '../../../modules/local/clean_vcf/preprocess/main'
 include { CLEANVCF_REVISE      } from '../../../modules/local/clean_vcf/revise/main'
 include { CLEANVCF_POSTPROCESS } from '../../../modules/local/clean_vcf/postprocess/main'
-include { CONCAT_VCFS as CONCAT_CLEANED_VCFS } from '../../../modules/local/concat_vcfs/main'
+include { CONCAT_VCFS as CONCAT_CLEANED_VCFS; contigOrdered } from '../../../modules/local/concat_vcfs/main'
 
 workflow VCF_CLEAN_VCF {
     take:
@@ -66,10 +66,11 @@ workflow VCF_CLEAN_VCF {
 
     CONCAT_CLEANED_VCFS(
         CLEANVCF_POSTPROCESS.out.vcf
-            .map { meta, v, tbi -> [ v, tbi ] }
+            .map { meta, v, tbi -> [ meta.contig, v, tbi ] }
             .collect(flat: false)
-            .map { pairs -> pairs.sort { it[0].name } }
-            .map { pairs -> [ [id: "${cohort_name}.cleaned"], pairs.collect { it[0] }, pairs.collect { it[1] } ] }
+            .map { rows -> [ rows ] }
+            .combine(contig_list.map { meta, c -> [ file(c).readLines().findAll { it } ] })
+            .map { rows, names -> [ [id: "${cohort_name}.cleaned"] ] + contigOrdered(rows, names) }
     )
 
     emit:

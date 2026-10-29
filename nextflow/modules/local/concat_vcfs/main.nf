@@ -10,6 +10,30 @@
 // minus its sites_only/sort_vcf_list options -- no caller here needs
 // them yet (GenerateBatchMetrics.wdl's own two call sites use neither).
 //
+// Per-contig inputs must be ordered with contigOrdered() below:
+// bcftools concat keeps its inputs' contig order, even with
+// --allow-overlaps, and GATK walkers reject a VCF whose contigs aren't
+// in header order (README: "Genome-wide VCFs had contigs in name order").
+//
+// Usage:
+//   per_contig.map { meta, v, tbi -> [ meta.contig, v, tbi ] }
+//       .collect(flat: false).map { rows -> [ rows ] }
+//       .combine(contig_list.map { meta, c -> [ file(c).readLines().findAll { it } ] })
+//       .map { rows, names -> [ [id: ...] ] + contigOrdered(rows, names) }
+//
+
+// [ contig, vcf, tbi ] rows -> [ vcfs, tbis ], in the contig list's order.
+def contigOrdered(rows, contigs) {
+    def sorted = rows.collect { contig, v, tbi ->
+        def i = contigs.indexOf(contig)
+        if (i < 0) {
+            error "contigOrdered: ${contig} (${v.name}) is not in the contig list"
+        }
+        [ i, v, tbi ]
+    }.sort { it[0] }
+    [ sorted.collect { it[1] }, sorted.collect { it[2] } ]
+}
+
 process CONCAT_VCFS {
     tag "${meta.id}"
     label 'process_single'

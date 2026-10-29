@@ -23,7 +23,7 @@ include { CPX_CNV_INTERVALS    } from '../../../modules/local/genotype_complex/c
 include { SPLIT_BED_BY_SIZE    } from '../../../modules/local/genotype_complex/split_bed_by_size/main'
 include { RDTEST_GENOTYPE      } from '../../../modules/local/genotype_complex/rdtest_genotype/main'
 include { PARSE_CPX_GENOTYPES  } from '../../../modules/local/genotype_complex/parse_cpx_genotypes/main'
-include { CONCAT_VCFS as CONCAT_COMPLEX_GENOTYPE } from '../../../modules/local/concat_vcfs/main'
+include { CONCAT_VCFS as CONCAT_COMPLEX_GENOTYPE; contigOrdered } from '../../../modules/local/concat_vcfs/main'
 
 workflow VCF_GENOTYPE_COMPLEX_VARIANTS {
     take:
@@ -79,10 +79,11 @@ workflow VCF_GENOTYPE_COMPLEX_VARIANTS {
     // --- genome-wide ---
     CONCAT_COMPLEX_GENOTYPE(
         PARSE_CPX_GENOTYPES.out.vcf
-            .map { meta, v, tbi -> [ v, tbi ] }
+            .map { meta, v, tbi -> [ meta.contig, v, tbi ] }
             .collect(flat: false)
-            .map { pairs -> pairs.sort { it[0].name } }
-            .map { pairs -> [ [id: "${cohort_name}.complex_genotype"], pairs.collect { it[0] }, pairs.collect { it[1] } ] }
+            .map { rows -> [ rows ] }
+            .combine(contig_list.map { meta, c -> [ file(c).readLines().findAll { it } ] })
+            .map { rows, names -> [ [id: "${cohort_name}.complex_genotype"] ] + contigOrdered(rows, names) }
     )
 
     emit:

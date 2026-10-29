@@ -2186,6 +2186,27 @@ ploidy tasks' inputs, so it costs one cohort-level rerun, taken together
 with the pedigree correction that prompted it. `VALIDATE_SAMPLESHEET_PED`
 still reads the full PED, so dangling parent IDs are still caught.
 
+#### Genome-wide VCFs had contigs in name order
+
+The first HPC run of CombineBatches on the genotyped VCFs failed in
+`GATK4_SVCLUSTER_JOIN` after chr19, with htsjdk's `The elements of the
+input Iterators are not sorted according to the comparator`. GenotypeBatch
+concatenates its per-contig VCFs sorted by filename, giving chr1, chr10,
+..., chr19, chr2, and so on. `bcftools concat --naive` keeps that order,
+and so does `--allow-overlaps` (checked: it merges by position within a
+contig but takes contigs in file order). bcftools and tabix accept any
+contig order, so GenotypeBatch's output, and the QC on it, looked fine.
+`SVCluster` is the first consumer that checks contig order against the
+header: chr1 to chr19 ascend in the dictionary, then chr2 steps back.
+
+ResolveComplexVariants, GenotypeComplexVariants and CleanVcf had the same
+latent bug in their genome-wide concats. Fix: per-contig inputs to a
+genome-wide concat are ordered by their index in the contig list
+(`contigOrdered()` in `modules/local/concat_vcfs`), which fails if a contig
+isn't listed. Concats of one contig's shards (zero-padded shard names, or
+`--allow-overlaps` within a contig) were already correct. Adopting the fix
+reruns GenotypeBatch's concat and everything after it, which is cheap.
+
 ### `FilterAnnotateVcf`: RF-score sites filtering
 
 `FILTER_ANNOTATE_VCF` module + `filter_batch_sites` subworkflow. Built
