@@ -2155,6 +2155,13 @@ reference sample is the first by sample ID. Checked with `-stub-run`: a
 fresh run then three resumes, all 165 tasks cached each time. Adopting it
 reruns those merges once (their file order changes).
 
+Correction, found later ([Genome-wide VCFs had contigs in name
+order](#genome-wide-vcfs-had-contigs-in-name-order)): the order of files in
+a `path` list doesn't affect the task hash, so the unstable cache came from
+`counts.first()` alone, and sorting didn't rerun the merges. Sorting still
+matters, for what a merge produces: a cached merge may have been built from
+any order.
+
 #### PED edits no longer rerun the cohort
 
 Correcting one parent in the PED (a half-sibling, see
@@ -2204,8 +2211,16 @@ latent bug in their genome-wide concats. Fix: per-contig inputs to a
 genome-wide concat are ordered by their index in the contig list
 (`contigOrdered()` in `modules/local/concat_vcfs`), which fails if a contig
 isn't listed. Concats of one contig's shards (zero-padded shard names, or
-`--allow-overlaps` within a contig) were already correct. Adopting the fix
-reruns GenotypeBatch's concat and everything after it, which is cheap.
+`--allow-overlaps` within a contig) were already correct.
+
+The first attempt at this fix changed nothing on the HPC: the resume
+reused the old concat from the cache and failed the same way. Nextflow's
+task hash ignores the order of files in a `path` list (checked: the same
+three files in a new order is a cache hit, reusing the old output). So
+`contigOrdered()` also records the order in `meta.contig_order`, which is
+hashed by value. A change of order now reruns the concat, and stub resumes
+reran GenotypeBatch's concat and everything after it (81 tasks), then
+cached all 202.
 
 ### `FilterAnnotateVcf`: RF-score sites filtering
 

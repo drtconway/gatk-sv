@@ -170,7 +170,7 @@ workflow GENOTYPE_BATCH {
         .collect(flat: false)
         .map { rows -> [ rows ] }
         .combine(contig_list.map { meta, c -> [ file(c).readLines().findAll { it } ] })
-        .map { rows, names -> [ [id: "${cohort_name}.genotype_batch"] ] + contigOrdered(rows, names) }
+        .map { rows, names -> contigOrdered([id: "${cohort_name}.genotype_batch"], rows, names) }
 
     CONCAT_GENOTYPE_BATCH_SHARDS(concat_input)
 

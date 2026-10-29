@@ -70,7 +70,7 @@ workflow VCF_CLEAN_VCF {
             .collect(flat: false)
             .map { rows -> [ rows ] }
             .combine(contig_list.map { meta, c -> [ file(c).readLines().findAll { it } ] })
-            .map { rows, names -> [ [id: "${cohort_name}.cleaned"] ] + contigOrdered(rows, names) }
+            .map { rows, names -> contigOrdered([id: "${cohort_name}.cleaned"], rows, names) }
     )
 
     emit:

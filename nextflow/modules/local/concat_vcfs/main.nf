@@ -19,19 +19,22 @@
 //   per_contig.map { meta, v, tbi -> [ meta.contig, v, tbi ] }
 //       .collect(flat: false).map { rows -> [ rows ] }
 //       .combine(contig_list.map { meta, c -> [ file(c).readLines().findAll { it } ] })
-//       .map { rows, names -> [ [id: ...] ] + contigOrdered(rows, names) }
+//       .map { rows, names -> contigOrdered([id: ...], rows, names) }
 //
 
-// [ contig, vcf, tbi ] rows -> [ vcfs, tbis ], in the contig list's order.
-def contigOrdered(rows, contigs) {
+// [ contig, vcf, tbi ] rows -> [ meta, vcfs, tbis ], in the contig list's
+// order. The order also goes into meta.contig_order: Nextflow's task hash
+// ignores the order of a path list (checked), so without it a resume
+// reuses a concat built in a different order.
+def contigOrdered(meta, rows, contigs) {
     def sorted = rows.collect { contig, v, tbi ->
         def i = contigs.indexOf(contig)
         if (i < 0) {
             error "contigOrdered: ${contig} (${v.name}) is not in the contig list"
         }
-        [ i, v, tbi ]
+        [ i, contig, v, tbi ]
     }.sort { it[0] }
-    [ sorted.collect { it[1] }, sorted.collect { it[2] } ]
+    [ meta + [contig_order: sorted.collect { it[1] }], sorted.collect { it[2] }, sorted.collect { it[3] } ]
 }
 
 process CONCAT_VCFS {

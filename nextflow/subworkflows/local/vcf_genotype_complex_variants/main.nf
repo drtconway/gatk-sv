@@ -83,7 +83,7 @@ workflow VCF_GENOTYPE_COMPLEX_VARIANTS {
             .collect(flat: false)
             .map { rows -> [ rows ] }
             .combine(contig_list.map { meta, c -> [ file(c).readLines().findAll { it } ] })
-            .map { rows, names -> [ [id: "${cohort_name}.complex_genotype"] ] + contigOrdered(rows, names) }
+            .map { rows, names -> contigOrdered([id: "${cohort_name}.complex_genotype"], rows, names) }
     )
 
     emit:

@@ -128,7 +128,7 @@ workflow VCF_RESOLVE_COMPLEX_VARIANTS {
             .collect(flat: false)
             .map { rows -> [ rows ] }
             .combine(contig_list.map { meta, c -> [ file(c).readLines().findAll { it } ] })
-            .map { rows, names -> [ [id: "${cohort_name}.complex_resolve"] ] + contigOrdered(rows, names) }
+            .map { rows, names -> contigOrdered([id: "${cohort_name}.complex_resolve"], rows, names) }
     )
 
     UPDATE_SR_LISTS(CONCAT_COMPLEX_RESOLVE.out.vcf, bothside_value, background_value)
