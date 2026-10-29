@@ -70,6 +70,7 @@ workflow FILTER_BATCH_SITES {
     merge_input = TABIX_FILTERED_VCFS.out.vcf
         .map { meta, vcf, tbi -> [ vcf, tbi ] }
         .collect(flat: false)
+        .map { pairs -> pairs.sort { it[0].name } }
         .map { pairs -> [ [id: "${cohort_name}.merge_pesr_depth"], pairs.collect { it[0] }, pairs.collect { it[1] } ] }
 
     MERGE_PESR_DEPTH_VCFS(merge_input)

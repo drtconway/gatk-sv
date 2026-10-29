@@ -94,6 +94,7 @@ workflow VCFS_CLUSTER_SVCLUSTER {
     cluster_input = prepared_vcfs
         .map { meta, vcf, tbi -> [ vcf, tbi ] }
         .collect(flat: false)
+        .map { pairs -> pairs.sort { it[0].name } }
         .map { pairs -> [ [id: caller], pairs.collect { it[0] }, pairs.collect { it[1] } ] }
 
     GATK4_SVCLUSTER(

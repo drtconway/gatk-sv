@@ -79,6 +79,7 @@ workflow VCFS_GENERATE_BATCH_METRICS {
     concat_input = caller_vcfs
         .map { meta, vcf, tbi -> [ vcf, tbi ] }
         .collect(flat: false)
+        .map { pairs -> pairs.sort { it[0].name } }
         .map { pairs -> [ [id: "${cohort_name}.batch_metrics.concat_input_vcfs"], pairs.collect { it[0] }, pairs.collect { it[1] } ] }
 
     CONCAT_INPUT_VCFS(concat_input)

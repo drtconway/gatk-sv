@@ -2133,6 +2133,25 @@ anything that's already cached (also confirmed locally). The general rule is
 to size first attempts generously. A retry is only a safety net, since its
 result may not survive a resume.
 
+#### Cohort-level merges depended on task completion order
+
+Found while stub-testing the PED fix below: with nothing changed, two
+resumes in a row used different cache entries for `MEDIAN_COVERAGE` and
+everything after it. `vcfs_merge_read_counts` took its bin grid from
+`counts.first()`, whichever sample's counts arrived first. Several merges
+also passed their per-sample files in arrival order: PE, SR and BAF
+evidence, stage 1's per-sample VCFs into `SVCluster`, the read-count
+columns, and the two cross-caller concats. Arrival order follows task
+completion on a fresh run, and isn't stable even when every upstream task
+is cached, so the file list (and the task hash) changed between runs,
+rerunning the merge and everything downstream. On the ~480-sample run this
+likely added to the reruns blamed above on the retry trap.
+
+Fix: every multi-file `collect` is sorted by filename, and the bin grid's
+reference sample is the first by sample ID. Checked with `-stub-run`: a
+fresh run then three resumes, all 165 tasks cached each time. Adopting it
+reruns those merges once (their file order changes).
+
 #### PED edits no longer rerun the cohort
 
 Correcting one parent in the PED (a half-sibling, see

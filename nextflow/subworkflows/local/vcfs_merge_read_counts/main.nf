@@ -29,12 +29,13 @@ workflow VCFS_MERGE_READ_COUNTS {
     main:
     // Any one sample's counts are representative for establishing the
     // bin grid -- every sample in a run was collected against the same
-    // params.preprocessed_intervals (see bam_collect_evidence). `.first()`
-    // takes the first element of the collected channel deterministically
-    // (Nextflow channels preserve arrival order for a single upstream
-    // process here, since GATK_COLLECT_READ_COUNTS has no scatter of its
-    // own per sample beyond the one call).
-    reference_counts = counts.first()
+    // params.preprocessed_intervals (see bam_collect_evidence). Take the
+    // first by sample ID, not `counts.first()`: arrival order isn't stable
+    // even when every upstream task is cached, and a different sample
+    // means a new hash here and a rerun of everything downstream.
+    reference_counts = counts
+        .toSortedList { a, b -> a[0].id <=> b[0].id }
+        .map { it[0] }
 
     BINCOV_SET_BINS(reference_counts)
     // Both broadcast across every BINCOV_MAKE_COLUMNS call below, same
@@ -64,10 +65,11 @@ workflow VCFS_MERGE_READ_COUNTS {
     // clearly) before relying on it here.
     bin_locs_value = bin_locs.map { it[0] }
 
+    // Sorted for a stable task hash (see reference_counts above).
     zpaste_input = BINCOV_MAKE_COLUMNS.out.bincov_column
         .map { meta, col -> col }
         .collect()
-        .map { cols -> [ cols ] }
+        .map { cols -> [ cols.sort { it.name } ] }
         .combine(bin_locs_value)
         .map { cols, locs -> [ [id: cohort_name], locs, cols ] }
 

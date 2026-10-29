@@ -55,6 +55,7 @@ workflow VCFS_MERGE_EVIDENCE {
     pe_input = pe
         .map { meta, f, tbi -> [ f, tbi ] }
         .collect(flat: false)
+        .map { pairs -> pairs.sort { it[0].name } }
         .map { pairs -> [ [id: "${cohort_name}.pe"], pairs.collect { it[0] }, pairs.collect { it[1] } ] }
 
     GATK_PRINT_SV_EVIDENCE_PE(pe_input, dict.map { meta, d -> d }.collect())
@@ -63,6 +64,7 @@ workflow VCFS_MERGE_EVIDENCE {
     sr_input = sr
         .map { meta, f, tbi -> [ f, tbi ] }
         .collect(flat: false)
+        .map { pairs -> pairs.sort { it[0].name } }
         .map { pairs -> [ [id: "${cohort_name}.sr"], pairs.collect { it[0] }, pairs.collect { it[1] } ] }
 
     GATK_PRINT_SV_EVIDENCE_SR(sr_input, dict.map { meta, d -> d }.collect())
@@ -78,6 +80,7 @@ workflow VCFS_MERGE_EVIDENCE {
     sd_input = sd
         .map { meta, f, tbi -> [ f, tbi ] }
         .collect(flat: false)
+        .map { pairs -> pairs.sort { it[0].name } }
         .map { pairs -> [ [id: cohort_name], pairs.collect { it[0] }, pairs.collect { it[1] } ] }
 
     GATK_SITE_DEPTH_TO_BAF(
