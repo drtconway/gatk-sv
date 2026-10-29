@@ -207,6 +207,29 @@
             "default": 10000,
             "description": "Records per shard for ScatterVcf, in GenerateBatchMetrics' per-shard annotation chain. Used by workflows/generate_batch_metrics.nf, genotype_batch.nf."
         },
+        "cytobands": {
+            "type": "string",
+            "format": "file-path",
+            "exists": true,
+            "description": "Cytoband BED (bgzipped), for svtk resolve --cytobands in ResolveComplexVariants. Required by workflows/genotype_batch.nf."
+        },
+        "cytobands_tbi": {
+            "type": "string",
+            "format": "file-path",
+            "exists": true,
+            "description": "Tabix index for cytobands."
+        },
+        "mei_bed": {
+            "type": "string",
+            "format": "file-path",
+            "exists": true,
+            "description": "Mobile element BED (bgzipped), for svtk resolve --mei-bed in ResolveComplexVariants. Required by workflows/genotype_batch.nf."
+        },
+        "resolve_max_shard_size": {
+            "type": "integer",
+            "default": 500,
+            "description": "Records per shard for svtk resolve in ResolveComplexVariants (upstream's max_shard_size_resolve). Used by workflows/genotype_batch.nf."
+        },
         "outdir": {
             "type": "string",
             "format": "directory-path",

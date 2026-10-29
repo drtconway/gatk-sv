@@ -59,6 +59,9 @@ bin_exclude https://storage.googleapis.com/gatk-sv-resources-public/hg38/v0/sv-r
 bin_exclude_tbi https://storage.googleapis.com/gatk-sv-resources-public/hg38/v0/sv-resources/resources/v1/bin_exclude.hg38.gatkcov.bed.gz.tbi
 pesr_exclude_list https://storage.googleapis.com/gatk-sv-resources-public/hg38/v0/sv-resources/resources/v1/PESR.encode.peri_all.repeats.delly.hg38.blacklist.sorted.bed.gz
 pesr_exclude_list_tbi https://storage.googleapis.com/gatk-sv-resources-public/hg38/v0/sv-resources/resources/v1/PESR.encode.peri_all.repeats.delly.hg38.blacklist.sorted.bed.gz.tbi
+cytobands https://storage.googleapis.com/gcp-public-data--broad-references/hg38/v0/sv-resources/resources/v1/cytobands_hg38.bed.gz
+cytobands_tbi https://storage.googleapis.com/gcp-public-data--broad-references/hg38/v0/sv-resources/resources/v1/cytobands_hg38.bed.gz.tbi
+mei_bed https://storage.googleapis.com/gatk-sv-resources-public/hg38/v0/sv-resources/resources/v1/hg38.repeatmasker.mei.with_SVA.pad_50_merged.bed.gz
 "
 
 declare -a param_lines=()

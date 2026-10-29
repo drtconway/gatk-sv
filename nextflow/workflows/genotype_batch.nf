@@ -4,7 +4,8 @@
 // Standalone entry point: sample sheet -> genotyped depth/PESR VCFs --
 // the actual goal of the genotyping prerequisite chain (see
 // ../README.md#path-to-genotyping-the-real-prerequisite-chain) -- then
-// MakeCohortVcf's CombineBatches on them (cross-caller merge). Will be
+// MakeCohortVcf's CombineBatches (cross-caller merge) and
+// ResolveComplexVariants on them. Will be
 // renamed once the rest of MakeCohortVcf is here; until then the name is
 // kept so existing launch commands work.
 //
@@ -32,6 +33,8 @@
 //     --clustering_track_sr hg38.SimpRep.bed \
 //     --clustering_track_sd hg38.SegDup.bed \
 //     --clustering_track_rm hg38.RM.bed \
+//     --cytobands cytobands_hg38.bed.gz --cytobands_tbi cytobands_hg38.bed.gz.tbi \
+//     --mei_bed hg38.repeatmasker.mei.with_SVA.pad_50_merged.bed.gz \
 //     --outdir results
 //
 // Composes generate_batch_metrics.nf's own full chain (stage-1
@@ -69,6 +72,7 @@ include { FILTER_BATCH_SITES          } from '../subworkflows/local/filter_batch
 include { GENOTYPE_BATCH              } from '../subworkflows/local/genotype_batch/main'
 include { VCFS_COMBINE_BATCHES        } from '../subworkflows/local/vcfs_combine_batches/main'
 include { BCFTOOLS_FILL_TAGS as BCFTOOLS_FILL_TAGS_COMBINED } from '../modules/local/bcftools_fill_tags/main'
+include { VCF_RESOLVE_COMPLEX_VARIANTS } from '../subworkflows/local/vcf_resolve_complex_variants/main'
 include { validateParameters          } from 'plugin/nf-schema'
 
 workflow {
@@ -92,7 +96,8 @@ workflow {
         'pesr_exclude_list', 'pesr_exclude_list_tbi',
         'clustering_config_part1', 'stratification_config_part1',
         'clustering_config_part2', 'stratification_config_part2',
-        'clustering_track_sr', 'clustering_track_sd', 'clustering_track_rm'
+        'clustering_track_sr', 'clustering_track_sd', 'clustering_track_rm',
+        'cytobands', 'cytobands_tbi', 'mei_bed'
     ].each { p ->
         if (!params[p]) {
             error "genotype_batch.nf requires --${p}"
@@ -307,4 +312,23 @@ workflow {
     )
 
     BCFTOOLS_FILL_TAGS_COMBINED.out.vcf.view { meta, v, i -> "Combined cohort VCF: ${v}" }
+
+    // --- Complex SV resolution (MakeCohortVcf's ResolveComplexVariants) ---
+
+    VCF_RESOLVE_COMPLEX_VARIANTS(
+        VCFS_COMBINE_BATCHES.out.combined_vcf,
+        VCFS_COMBINE_BATCHES.out.bothside_pass,
+        VCFS_COMBINE_BATCHES.out.background_fail,
+        VCFS_MERGE_EVIDENCE.out.merged_pe,
+        ADJUDICATE_SV.out.cutoffs,
+        contig_list,
+        dict,
+        channel.value([ file(params.cytobands), file(params.cytobands_tbi) ]),
+        channel.value(file(params.mei_bed)),
+        channel.value([ file(params.pesr_exclude_list), file(params.pesr_exclude_list_tbi) ]),
+        'cohort',
+        (params.resolve_max_shard_size ?: 500) as Integer
+    )
+
+    VCF_RESOLVE_COMPLEX_VARIANTS.out.vcf.view { meta, v, i -> "Complex-resolved VCF: ${v}" }
 }

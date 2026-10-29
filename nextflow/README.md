@@ -767,7 +767,8 @@ for two PESR callers and no depth caller. Neither tier of the
 | GenotypeBatch | `genotype_batch` (+ AN/AC/AF) | Done; real cohort |
 | RegenotypeCNVs | — | Not started (needs depth calls) |
 | MakeCohortVcf: CombineBatches | `vcfs_combine_batches` | Built on the genotyped VCFs, as upstream; not yet run on the cohort |
-| MakeCohortVcf: ResolveComplex, GenotypeComplex, CleanVcf | — | Not started |
+| MakeCohortVcf: ResolveComplexVariants | `vcf_resolve_complex_variants` | Built; real local test, not yet run on the cohort |
+| MakeCohortVcf: GenotypeComplex, CleanVcf | — | Not started |
 | AnnotateVcf | — | Not started |
 
 What the output is, as of now:
@@ -2292,6 +2293,55 @@ doesn't yet show the genotypes are good. Output QC (per-sample counts,
 trio Mendelian consistency) is the next step; see
 [Not yet started](#not-yet-started).
 
+### `ResolveComplexVariants`: complex SV resolution
+
+`vcf_resolve_complex_variants` subworkflow, run by `genotype_batch.nf` on
+CombineBatches' output. Reproduces `wdl/ResolveComplexVariants.wdl` (with
+`wdl/ResolveCpxSv.wdl`): linking inversion, translocation and CNV
+breakpoints that belong to one event into INV/CPX/CTX records. Per contig,
+as upstream:
+
+1. `RESOLVE_PREP_CONTIG`: the contig's inversions only, and the contig's
+   full VCF after the same-breakpoint overlap filter
+   (`overlap_breakpoint_filter.py`).
+2. Two resolution passes, inversions only (preclustering 50 Mb / 0.1) and
+   all variants (2 kb / ~0): `SHARD_VCF_CPX` (svtk vcfcluster candidate
+   clusters, sharded by variant ID, 500 records per shard), then
+   `SVTK_RESOLVE_SHARD` per shard, then a per-pass concat. A pass with no
+   records passes its input on, as upstream.
+3. `INTEGRATE_RESOLVED_VCFS`: merge the two passes and rename
+   (`<cohort>_<SVTYPE>_<contig>_<n>`).
+
+Then genome-wide: concat the contigs (upstream's `ReshardVcf` re-splits
+them by contig for the steps after; ours stay genome-wide until those are
+built) and `UPDATE_SR_LISTS` maps the SR flag lists onto the new IDs. The
+result is published as `${outdir}/resolve_complex/cohort.complex_resolve.vcf.gz`.
+
+Differences from the WDL, none in what is computed:
+
+- Upstream's per-shard tasks (`PullVcfShard`, `ResolvePrep`,
+  `SvtkResolve`, `RestoreUnresolvedCnv`) are one task, and
+  `ShardVcfCpx` + `ShardVidsForClustering` another, to keep the Slurm job
+  count down (24 contigs × 2 passes × shards).
+- `UPDATE_SR_LISTS` runs once on the genome-wide VCF, not per contig: the
+  lists are genome-wide here, and the update keeps IDs it doesn't find, so
+  per-contig runs would repeat every ID once per contig.
+- Sorts spill to the work dir (`-T`, `vcf-sort -t`), not the node's `/tmp`.
+
+Everything runs in GATK-SV's sv-pipeline image (the one `SVTK_STANDARDIZE`
+uses) and calls its bundled `/opt/sv-pipeline` scripts, as the WDL does;
+nothing is vendored. New static resources: `cytobands` (+ `.tbi`) and
+`mei_bed`; the PE exclude list is the existing `pesr_exclude_list`, as
+upstream. `scripts/fetch_static_resources.sh` fetches both.
+
+Validated for real (`-profile docker`) on a synthetic genotyped VCF run
+through CombineBatches first: an inversion `++`/`--` breakpoint pair
+resolved into one INV with both as `MEMBERS`, a DEL passed through, a lone
+translocation breakend stayed BND (`UNRESOLVED_TYPE=SINGLE_ENDER_+-`),
+`PrintSVEvidence` fetched the PE pairs around the inversion breakpoints,
+contigs with no records passed through, and the SR list update mapped a
+merged member's ID to its new one. Not yet run on the cohort.
+
 ### Output QC: first pass (Oct 2026)
 
 `scripts/qc_genotyped_vcf.sh` on `cohort.genotyped.pesr.vcf.gz` (440
@@ -2340,8 +2390,10 @@ Planned order:
    of the panel bundle. Unlocks `RegenotypeCNVs`, which is what
    `GenerateRegenoCoverageMedians`' output is for.
 3. **`MakeCohortVcf`**, now in progress, ahead of step 2: `CombineBatches`
-   (built, see [stage 2](#harmonisation-stage-2-cross-caller-merge)), then
-   `ResolveComplexVariants`, `GenotypeComplexVariants`, `CleanVcf`. This
+   (built, see [stage 2](#harmonisation-stage-2-cross-caller-merge)),
+   `ResolveComplexVariants` (built, see
+   [above](#resolvecomplexvariants-complex-sv-resolution)), then
+   `GenotypeComplexVariants`, `CleanVcf`. This
    is what makes the output clean to import into seqR, and the input
    upstream's genotype filtering expects.
    Then **genotype filtering** (`RecalibrateGq` + `FilterGenotypes`, see
